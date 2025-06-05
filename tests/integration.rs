@@ -87,4 +87,29 @@ mod integration {
         let foos: Vec<String> = rows.iter().map(|row| row.get("foo")).collect();
         assert_eq!(foos, vec!["hello", "world"]);
     }
+
+    #[test]
+    #[serial]
+    fn test_orchestrate_add_column() {
+        let mut client = setup_test_db();
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        // Simulate the main.rs logic: create schema, then orchestrate
+        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
+        migration.orchestrate(&mut client, false).unwrap();
+        // Check that the shadow table does not exist (since execute=false, it should be dropped at the end)
+        let row = client.query_one(
+            "SELECT to_regclass('post_migrations.test_table') IS NULL AS dropped",
+            &[],
+        ).unwrap();
+        let dropped: bool = row.get("dropped");
+        assert!(dropped, "Shadow table should be dropped after orchestration");
+        // Check that the original table is untouched and has the original data
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
+        let row = client.query_one(
+            "SELECT foo FROM test_table WHERE foo = 'hello'",
+            &[],
+        ).unwrap();
+        let foo: String = row.get("foo");
+        assert_eq!(foo, "hello");
+    }
 }

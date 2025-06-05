@@ -81,53 +81,7 @@ impl Migration {
     }
 
     pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
-        let mut replay_statements = vec![];
-        let rows = _client.query(
-            &format!(
-                "SELECT * FROM {} ORDER BY post_migrations_log_id",
-                self.log_table_name
-            ),
-            &[],
-        )?;
-
-        for row in rows {
-            let (id, operation): (i64, String) = (row.get("id"), row.get("operation"));
-            let values = row
-                .columns()
-                .iter()
-                .skip(3)
-                .map(|column| row.get(column.name()))
-                .collect::<Vec<String>>();
-            match operation.as_str() {
-                "DELETE" => replay_statements.push(format!(
-                    "DELETE FROM {} WHERE id = {}",
-                    self.shadow_table_name, id
-                )),
-                "INSERT" => replay_statements.push(format!(
-                    "INSERT INTO {} VALUES ({})",
-                    self.shadow_table_name,
-                    values.join(", ")
-                )),
-                "UPDATE" => {
-                    let column_list = row
-                        .columns()
-                        .iter()
-                        .skip(3)
-                        .map(|column| column.name())
-                        .collect::<Vec<&str>>()
-                        .join(", ");
-                    replay_statements.push(format!(
-                        "UPDATE {} SET ({}) = ({}) WHERE id = {}",
-                        self.shadow_table_name,
-                        column_list,
-                        values.join(", "),
-                        id
-                    ));
-                }
-                _ => return Err(anyhow::anyhow!("Unknown operation: {}", operation)),
-            }
-        }
-
+        // No-op for now; implementation is broken and needs to be fixed
         Ok(())
     }
 
@@ -145,6 +99,24 @@ impl Migration {
         );
         println!("Swapping tables:\n{:?}", swap_statement);
         client.simple_query(&swap_statement)?;
+        Ok(())
+    }
+
+    pub fn orchestrate(&self, client: &mut Client, execute: bool) -> Result<(), anyhow::Error> {
+        self.drop_shadow_table_if_exists(client)?;
+        self.create_shadow_table(client)?;
+        self.migrate_shadow_table(client)?;
+        self.create_log_table(client)?;
+        // TODO need to add triggers to log changes to the table into the log table
+        self.backfill_shadow_table(client)?;
+        self.replay_log(client)?;
+        if execute {
+            // TODO need to lock table against writes, finish replay, then swap tables
+            self.swap_tables(client)?;
+            self.drop_old_table_if_exists(client)?;
+        } else {
+            self.drop_shadow_table_if_exists(client)?;
+        }
         Ok(())
     }
 }
