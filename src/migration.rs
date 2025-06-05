@@ -109,8 +109,15 @@ impl Migration {
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
         self.create_log_table(&mut client)?;
-        // TODO: need to add triggers to log changes to the table into the log table
-        self.backfill_shadow_table(&mut client)?;
+        // Run backfill in a background thread
+        let table_name = self.table_name.clone();
+        let shadow_table_name = self.shadow_table_name.clone();
+        let mut backfill_client = pool.get()?;
+        let backfill = BatchedBackfill { batch_size: 1000 };
+        let backfill_handle = std::thread::spawn(move || {
+            backfill.backfill(&table_name, &shadow_table_name, &mut backfill_client).expect("Backfill failed");
+        });
+        backfill_handle.join().expect("Backfill thread panicked");
         self.replay_log(&mut client)?;
         if execute {
             // TODO: need to lock table against writes, finish replay, then swap tables
