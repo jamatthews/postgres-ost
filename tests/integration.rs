@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod integration {
     use postgres::{Client, NoTls};
+    use postgres_ost::backfill::BatchedBackfill;
     use postgres_ost::migration::Migration;
     use serial_test::serial;
 
@@ -64,5 +65,26 @@ mod integration {
         ).unwrap();
         let foo: String = row.get("foo");
         assert_eq!(foo, "hello");
+    }
+
+    #[test]
+    #[serial]
+    fn test_batched_backfill_shadow_table() {
+        let mut client = setup_test_db();
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        migration.backfill_strategy = Box::new(BatchedBackfill { batch_size: 1 });
+        migration.create_shadow_table(&mut client).unwrap();
+        // Insert two rows into the main table
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('world')").unwrap();
+        // Run the batched backfill
+        migration.backfill_shadow_table(&mut client).unwrap();
+        // Check that both rows are copied to the shadow table
+        let rows = client.query(
+            "SELECT foo FROM post_migrations.test_table ORDER BY id",
+            &[],
+        ).unwrap();
+        let foos: Vec<String> = rows.iter().map(|row| row.get("foo")).collect();
+        assert_eq!(foos, vec!["hello", "world"]);
     }
 }

@@ -6,6 +6,7 @@ use args::*;
 
 mod migration;
 use migration::Migration;
+mod backfill;
 
 fn main() -> Result<()> {
     let args = get_args()?;
