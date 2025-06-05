@@ -81,7 +81,7 @@ impl Migration {
     }
 
     pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
-        // No-op for now; implementation is broken and needs to be fixed
+        // Temporarily a no-op
         Ok(())
     }
 
@@ -102,16 +102,16 @@ impl Migration {
         Ok(())
     }
 
-    pub fn orchestrate(&self, client: &mut Client, execute: bool) -> Result<(), anyhow::Error> {
+    pub fn orchestrate(&self, client: &mut postgres::Client, execute: bool) -> anyhow::Result<()> {
         self.drop_shadow_table_if_exists(client)?;
         self.create_shadow_table(client)?;
         self.migrate_shadow_table(client)?;
         self.create_log_table(client)?;
-        // TODO need to add triggers to log changes to the table into the log table
+        // TODO: need to add triggers to log changes to the table into the log table
         self.backfill_shadow_table(client)?;
         self.replay_log(client)?;
         if execute {
-            // TODO need to lock table against writes, finish replay, then swap tables
+            // TODO: need to lock table against writes, finish replay, then swap tables
             self.swap_tables(client)?;
             self.drop_old_table_if_exists(client)?;
         } else {

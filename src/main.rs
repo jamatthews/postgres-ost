@@ -1,5 +1,7 @@
 use anyhow::Result;
 use postgres::{Client, NoTls};
+use r2d2::{Pool, PooledConnection};
+use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
 mod args;
 use args::*;
@@ -10,13 +12,10 @@ mod backfill;
 
 fn main() -> Result<()> {
     let args = get_args()?;
-    let mut client = Client::connect(&args.uri, NoTls)?;
+    let manager = PostgresConnectionManager::new(args.uri.parse()?, R2d2NoTls);
+    let pool = Pool::new(manager)?;
+    let mut client = pool.get()?;
     let migration = Migration::new(&args.sql);
-
-    let create_schema_statemement = format!("CREATE SCHEMA IF NOT EXISTS post_migrations");
-    client.simple_query(&create_schema_statemement)?;
-
     migration.orchestrate(&mut client, args.execute)?;
-
     Ok(())
 }
