@@ -6,12 +6,32 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 
+pub struct Backfill {
+    pub shadow_table_name: String,
+    pub table_name: String,
+}
+
+impl Backfill {
+    pub fn backfill(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        // TODO do this in chunks to avoid large transactions
+        // TODO parallelize this operation
+        let backfill_statement = format!(
+            "INSERT INTO {} SELECT * FROM {}",
+            self.shadow_table_name, self.table_name
+        );
+        println!("Backfilling shadow table:\n{:?}", backfill_statement);
+        client.simple_query(&backfill_statement)?;
+        Ok(())
+    }
+}
+
 pub struct Migration {
     pub ast: Vec<sqlparser::ast::Statement>,
     pub table_name: String,
     pub shadow_table_name: String,
     pub log_table_name: String,
     pub old_table_name: String,
+    pub backfill: Backfill,
 }
 
 impl Migration {
@@ -28,12 +48,17 @@ impl Migration {
         let shadow_table_name = format!("post_migrations.{}", table_name);
         let log_table_name = format!("post_migrations.{}_log", table_name);
         let old_table_name = format!("post_migrations.{}_old", table_name);
+        let backfill = Backfill {
+            shadow_table_name: shadow_table_name.clone(),
+            table_name: table_name.to_string(),
+        };
         Migration {
             ast: ast,
             table_name: table_name.to_string(),
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
+            backfill,
         }
     }
 
@@ -74,15 +99,7 @@ impl Migration {
     }
 
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        // TODO do this in chunks to avoid large transactions
-        // TODO parallelize this operation
-        let backfill_statement = format!(
-            "INSERT INTO {} SELECT * FROM {}",
-            self.shadow_table_name, self.table_name
-        );
-        println!("Backfilling shadow table:\n{:?}", backfill_statement);
-        client.simple_query(&backfill_statement)?;
-        Ok(())
+        self.backfill.backfill(client)
     }
 
     pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {

@@ -46,4 +46,23 @@ mod integration {
         let column_name: String = row.get("column_name");
         assert_eq!(column_name, "bar");
     }
+
+    #[test]
+    #[serial]
+    fn test_backfill_shadow_table() {
+        let mut client = setup_test_db();
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        migration.create_shadow_table(&mut client).unwrap();
+        // Insert a row into the main table
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
+        // Run the backfill
+        migration.backfill_shadow_table(&mut client).unwrap();
+        // Check that the row is copied to the shadow table
+        let row = client.query_one(
+            "SELECT foo FROM post_migrations.test_table",
+            &[],
+        ).unwrap();
+        let foo: String = row.get("foo");
+        assert_eq!(foo, "hello");
+    }
 }
