@@ -6,25 +6,6 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 
-#[derive(Debug)]
-struct TableNameRewriter {
-    rename_table_from: String,
-    rename_table_to: String,
-}
-
-impl VisitorMut for TableNameRewriter {
-    type Break = ();
-
-    fn post_visit_relation(&mut self, object_name: &mut ObjectName) -> ControlFlow<Self::Break> {
-        if object_name.to_string() == self.rename_table_from {
-            *object_name = ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
-                Ident::new(&self.rename_table_to),
-            )]);
-        }
-        ControlFlow::Continue(())
-    }
-}
-
 pub struct Migration {
     pub ast: Vec<sqlparser::ast::Statement>,
     pub table_name: String,
@@ -36,11 +17,7 @@ pub struct Migration {
 impl Migration {
     pub fn new(sql: &str) -> Self {
         let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let mut tables = vec![];
-        let _ = visit_relations(&ast, |relation| {
-            tables.push(relation.to_string());
-            ControlFlow::<()>::Continue(())
-        });
+        let tables = extract_tables(sql);
         let unique_tables = tables.iter().unique().collect::<Vec<_>>();
         assert!(
             unique_tables.len() == 1,
@@ -79,15 +56,8 @@ impl Migration {
     }
 
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        // TODO support tables not in the public schema
-        let mut rewriter = TableNameRewriter {
-            rename_table_from: self.table_name.to_string(),
-            rename_table_to: self.shadow_table_name.clone(),
-        };
-
-        let mut altered_ast = self.ast.clone();
-        let _ = altered_ast.visit(&mut rewriter);
-        let altered_statement = altered_ast[0].to_string();
+        let altered_statement =
+            migrate_shadow_table_statement(&self.ast, &self.table_name, &self.shadow_table_name);
         println!("Migrating shadow table:\n{:?}", altered_statement);
         client.batch_execute(&altered_statement)?;
         Ok(())
@@ -181,5 +151,72 @@ impl Migration {
         println!("Swapping tables:\n{:?}", swap_statement);
         client.simple_query(&swap_statement)?;
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct TableNameRewriter {
+    rename_table_from: String,
+    rename_table_to: String,
+}
+
+impl VisitorMut for TableNameRewriter {
+    type Break = ();
+
+    fn post_visit_relation(&mut self, object_name: &mut ObjectName) -> ControlFlow<Self::Break> {
+        if object_name.to_string() == self.rename_table_from {
+            *object_name = ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                Ident::new(&self.rename_table_to),
+            )]);
+        }
+        ControlFlow::Continue(())
+    }
+}
+
+fn extract_tables(sql: &str) -> Vec<String> {
+    let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+    let mut tables = vec![];
+    let _ = visit_relations(&ast, |relation| {
+        tables.push(relation.to_string());
+        ControlFlow::<()>::Continue(())
+    });
+    tables
+}
+
+fn migrate_shadow_table_statement(
+    ast: &[sqlparser::ast::Statement],
+    table_name: &str,
+    shadow_table_name: &str,
+) -> String {
+    let mut rewriter = TableNameRewriter {
+        rename_table_from: table_name.to_string(),
+        rename_table_to: shadow_table_name.to_string(),
+    };
+    let mut altered_ast = ast.to_vec();
+    let _ = altered_ast.visit(&mut rewriter);
+    altered_ast[0].to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_extract_tables() {
+        let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
+        let tables = extract_tables(sql);
+        assert_eq!(tables, vec!["test_table"]);
+    }
+
+    #[test]
+    fn test_migrate_shadow_table_statement() {
+        let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
+        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        let rewritten =
+            migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
+        assert_eq!(
+            rewritten,
+            "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
+        );
     }
 }
