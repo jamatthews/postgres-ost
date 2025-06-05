@@ -3,6 +3,8 @@
 #[cfg(test)]
 mod integration {
     use postgres::{Client, NoTls};
+    use r2d2::Pool;
+    use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
     use postgres_ost::backfill::BatchedBackfill;
     use postgres_ost::migration::Migration;
     use serial_test::serial;
@@ -95,7 +97,9 @@ mod integration {
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
         // Simulate the main.rs logic: create schema, then orchestrate
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
-        migration.orchestrate(&mut client, false).unwrap();
+        let manager = PostgresConnectionManager::new("postgres://post_test@localhost/post_test".parse().unwrap(), R2d2NoTls);
+        let pool = Pool::new(manager).unwrap();
+        migration.orchestrate(&pool, false).unwrap();
         // Check that the shadow table does not exist (since execute=false, it should be dropped at the end)
         let row = client.query_one(
             "SELECT to_regclass('post_migrations.test_table') IS NULL AS dropped",

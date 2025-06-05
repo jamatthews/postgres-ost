@@ -6,6 +6,8 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 use crate::backfill::{BackfillStrategy, BatchedBackfill};
+use r2d2::Pool;
+use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
 pub struct Migration {
     pub ast: Vec<sqlparser::ast::Statement>,
@@ -102,20 +104,22 @@ impl Migration {
         Ok(())
     }
 
-    pub fn orchestrate(&self, client: &mut postgres::Client, execute: bool) -> anyhow::Result<()> {
-        self.drop_shadow_table_if_exists(client)?;
-        self.create_shadow_table(client)?;
-        self.migrate_shadow_table(client)?;
-        self.create_log_table(client)?;
+    pub fn orchestrate(&self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
+        let mut client = pool.get()?;
+        // Leave the create schema in main
+        self.drop_shadow_table_if_exists(&mut client)?;
+        self.create_shadow_table(&mut client)?;
+        self.migrate_shadow_table(&mut client)?;
+        self.create_log_table(&mut client)?;
         // TODO: need to add triggers to log changes to the table into the log table
-        self.backfill_shadow_table(client)?;
-        self.replay_log(client)?;
+        self.backfill_shadow_table(&mut client)?;
+        self.replay_log(&mut client)?;
         if execute {
             // TODO: need to lock table against writes, finish replay, then swap tables
-            self.swap_tables(client)?;
-            self.drop_old_table_if_exists(client)?;
+            self.swap_tables(&mut client)?;
+            self.drop_old_table_if_exists(&mut client)?;
         } else {
-            self.drop_shadow_table_if_exists(client)?;
+            self.drop_shadow_table_if_exists(&mut client)?;
         }
         Ok(())
     }
