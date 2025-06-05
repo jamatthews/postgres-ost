@@ -2,13 +2,13 @@ use anyhow::Result;
 use postgres::Client;
 use crate::migration::Migration;
 
-pub trait BackfillStrategy: Send + Sync {
+pub trait Backfill: Send + Sync {
     fn backfill(&self, migration: &Migration, client: &mut Client) -> Result<(), anyhow::Error>;
 }
 
 pub struct SimpleBackfill;
 
-impl BackfillStrategy for SimpleBackfill {
+impl Backfill for SimpleBackfill {
     fn backfill(&self, migration: &Migration, client: &mut Client) -> Result<(), anyhow::Error> {
         let backfill_statement = format!(
             "INSERT INTO {} SELECT * FROM {}",
@@ -24,7 +24,7 @@ pub struct BatchedBackfill {
     pub batch_size: usize,
 }
 
-impl BackfillStrategy for BatchedBackfill {
+impl Backfill for BatchedBackfill {
     fn backfill(&self, migration: &Migration, client: &mut Client) -> Result<(), anyhow::Error> {
         let batch_size = self.batch_size;
         let mut last_seen_id: Option<i32> = None;

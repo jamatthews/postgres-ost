@@ -5,7 +5,7 @@ use sqlparser::ast::{Ident, ObjectName, VisitMut, VisitorMut, visit_relations};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
-use crate::backfill::{BackfillStrategy, BatchedBackfill};
+use crate::backfill::{Backfill, BatchedBackfill};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -15,7 +15,7 @@ pub struct Migration {
     pub shadow_table_name: String,
     pub log_table_name: String,
     pub old_table_name: String,
-    pub backfill_strategy: Box<dyn BackfillStrategy>,
+    pub backfill: Box<dyn Backfill>,
 }
 
 impl Migration {
@@ -38,7 +38,7 @@ impl Migration {
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
-            backfill_strategy: Box::new(BatchedBackfill { batch_size: 1000 }),
+            backfill: Box::new(BatchedBackfill { batch_size: 1000 }),
         }
     }
 
@@ -79,7 +79,7 @@ impl Migration {
     }
 
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        self.backfill_strategy.backfill(self, client)
+        self.backfill.backfill(self, client)
     }
 
     pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
