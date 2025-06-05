@@ -15,7 +15,6 @@ pub struct Migration {
     pub shadow_table_name: String,
     pub log_table_name: String,
     pub old_table_name: String,
-    pub backfill: Box<dyn Backfill>,
 }
 
 impl Migration {
@@ -38,7 +37,6 @@ impl Migration {
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
-            backfill: Box::new(BatchedBackfill { batch_size: 1000 }),
         }
     }
 
@@ -79,7 +77,7 @@ impl Migration {
     }
 
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        self.backfill.backfill(self, client)
+        BatchedBackfill { batch_size: 1000 }.backfill(&self.table_name, &self.shadow_table_name, client)
     }
 
     pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
