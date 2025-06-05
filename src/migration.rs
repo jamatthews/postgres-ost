@@ -5,7 +5,7 @@ use sqlparser::ast::{Ident, ObjectName, VisitMut, VisitorMut, visit_relations};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
-use crate::backfill::{BackfillStrategy, SimpleBackfill};
+use crate::backfill::{BackfillStrategy, BatchedBackfill};
 
 pub struct Migration {
     pub ast: Vec<sqlparser::ast::Statement>,
@@ -36,7 +36,7 @@ impl Migration {
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
-            backfill_strategy: Box::new(SimpleBackfill),
+            backfill_strategy: Box::new(BatchedBackfill { batch_size: 1000 }),
         }
     }
 
