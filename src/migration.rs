@@ -91,8 +91,20 @@ impl Migration {
                 let id: i64 = row.get("id");
                 let delete_query = format!("DELETE FROM {} WHERE id = {}", self.shadow_table_name, id);
                 queries.push(delete_query);
+            } else if operation == "INSERT" {
+                let id: i64 = row.get("id");
+                // Insert the row from the main table into the shadow table if not already present
+                let insert_query = format!(
+                    "INSERT INTO {shadow} SELECT * FROM {main} WHERE id = {id} AND NOT EXISTS (\
+                        SELECT 1 FROM {shadow} WHERE id = {id}\
+                    )",
+                    shadow = self.shadow_table_name,
+                    main = self.table_name,
+                    id = id
+                );
+                queries.push(insert_query);
             }
-            // Future: handle INSERT/UPDATE
+            // Future: handle UPDATE
         }
         for query in queries {
             client.batch_execute(&query)?;

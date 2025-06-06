@@ -146,4 +146,30 @@ mod integration {
         assert_eq!(id, 2);
         assert_eq!(foo, "b");
     }
+
+    #[test]
+    #[serial]
+    fn test_replay_log_insert() {
+        let mut client = setup_test_db();
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table only
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('inserted')").unwrap();
+        // Log an INSERT for id=1
+        client.simple_query(
+            "INSERT INTO post_migrations.test_table_log (operation, id) VALUES ('INSERT', 1)"
+        ).unwrap();
+        // Run replay_log
+        migration.replay_log(&mut client).unwrap();
+        // Check that the row is now in the shadow table
+        let row = client.query_one(
+            "SELECT id, foo FROM post_migrations.test_table WHERE id = 1",
+            &[],
+        ).unwrap();
+        let id: i64 = row.get("id");
+        let foo: String = row.get("foo");
+        assert_eq!(id, 1);
+        assert_eq!(foo, "inserted");
+    }
 }
