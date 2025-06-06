@@ -1,6 +1,3 @@
-use anyhow::Result;
-use postgres::Client;
-
 pub trait Backfill {
     fn backfill(&self, table_name: &str, shadow_table_name: &str, client: &mut postgres::Client) -> anyhow::Result<()>;
 }
@@ -26,7 +23,7 @@ pub struct BatchedBackfill {
 impl Backfill for BatchedBackfill {
     fn backfill(&self, table_name: &str, shadow_table_name: &str, client: &mut postgres::Client) -> anyhow::Result<()> {
         let batch_size = self.batch_size;
-        let mut last_seen_id: Option<i32> = None;
+        let mut last_seen_id: Option<i64> = None;
         loop {
             let rows = if let Some(last_id) = last_seen_id {
                 let backfill_statement = format!(
@@ -46,7 +43,7 @@ impl Backfill for BatchedBackfill {
             if rows.is_empty() {
                 break;
             }
-            last_seen_id = rows.last().map(|row| row.get::<_, i32>(0).clone());
+            last_seen_id = rows.last().map(|row| row.get::<_, i64>(0).clone());
         }
         Ok(())
     }

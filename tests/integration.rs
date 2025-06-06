@@ -5,7 +5,6 @@ mod integration {
     use postgres::{Client, NoTls};
     use r2d2::Pool;
     use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
-    use postgres_ost::backfill::BatchedBackfill;
     use postgres_ost::migration::Migration;
     use serial_test::serial;
 
@@ -15,7 +14,7 @@ mod integration {
         client.simple_query("DROP TABLE IF EXISTS public.test_table CASCADE").unwrap();
         client.simple_query("DROP SCHEMA IF EXISTS post_migrations CASCADE").unwrap();
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
-        client.simple_query("CREATE TABLE test_table (id SERIAL PRIMARY KEY, foo TEXT)").unwrap();
+        client.simple_query("CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, foo TEXT)").unwrap();
         client
     }
 
@@ -62,10 +61,12 @@ mod integration {
         migration.backfill_shadow_table(&mut client).unwrap();
         // Check that the row is copied to the shadow table
         let row = client.query_one(
-            "SELECT foo FROM post_migrations.test_table",
+            "SELECT id, foo FROM post_migrations.test_table",
             &[],
         ).unwrap();
+        let id: i64 = row.get("id");
         let foo: String = row.get("foo");
+        assert_eq!(id, 1);
         assert_eq!(foo, "hello");
     }
 
@@ -82,10 +83,12 @@ mod integration {
         migration.backfill_shadow_table(&mut client).unwrap();
         // Check that both rows are copied to the shadow table
         let rows = client.query(
-            "SELECT foo FROM post_migrations.test_table ORDER BY id",
+            "SELECT id, foo FROM post_migrations.test_table ORDER BY id",
             &[],
         ).unwrap();
+        let ids: Vec<i64> = rows.iter().map(|row| row.get("id")).collect();
         let foos: Vec<String> = rows.iter().map(|row| row.get("foo")).collect();
+        assert_eq!(ids, vec![1, 2]);
         assert_eq!(foos, vec!["hello", "world"]);
     }
 
@@ -114,5 +117,33 @@ mod integration {
         ).unwrap();
         let foo: String = row.get("foo");
         assert_eq!(foo, "hello");
+    }
+
+    #[test]
+    #[serial]
+    fn test_replay_log_delete() {
+        let mut client = setup_test_db();
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.create_log_table(&mut client).unwrap();
+        // Insert two rows into the main and shadow tables
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('a'), ('b')").unwrap();
+        client.simple_query("INSERT INTO post_migrations.test_table (id, foo) VALUES (1, 'a'), (2, 'b')").unwrap();
+        // Insert a DELETE operation for id=1 into the log table
+        client.simple_query(
+            "INSERT INTO post_migrations.test_table_log (operation, id) VALUES ('DELETE', 1)"
+        ).unwrap();
+        // Run replay_log
+        migration.replay_log(&mut client).unwrap();
+        // Check that only id=2 remains in the shadow table
+        let rows = client.query(
+            "SELECT id, foo FROM post_migrations.test_table ORDER BY id",
+            &[],
+        ).unwrap();
+        assert_eq!(rows.len(), 1);
+        let id: i64 = rows[0].get("id");
+        let foo: String = rows[0].get("foo");
+        assert_eq!(id, 2);
+        assert_eq!(foo, "b");
     }
 }

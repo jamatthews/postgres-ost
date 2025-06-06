@@ -76,12 +76,27 @@ impl Migration {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         BatchedBackfill { batch_size: 1000 }.backfill(&self.table_name, &self.shadow_table_name, client)
     }
 
-    pub fn replay_log(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
-        // Temporarily a no-op
+    pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        let mut queries = Vec::new();
+        let log_query = format!("SELECT * FROM {} ORDER BY post_migration_log_id ASC", self.log_table_name);
+        let rows = client.query(&log_query, &[])?;
+        for row in rows {
+            let operation: String = row.get("operation");
+            if operation == "DELETE" {
+                let id: i64 = row.get("id");
+                let delete_query = format!("DELETE FROM {} WHERE id = {}", self.shadow_table_name, id);
+                queries.push(delete_query);
+            }
+            // Future: handle INSERT/UPDATE
+        }
+        for query in queries {
+            client.batch_execute(&query)?;
+        }
         Ok(())
     }
 
