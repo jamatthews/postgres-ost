@@ -3,9 +3,8 @@
 
 use postgres::Client;
 use anyhow::Result;
-use crate::column_map::ColumnMap;
 use postgres::types::Type;
-use crate::migration::PrimaryKeyInfo;
+use crate::{ColumnMap, PrimaryKeyInfo};
 
 pub trait Replay {
     fn replay_log(&self, client: &mut Client) -> Result<()>;

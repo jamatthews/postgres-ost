@@ -2,15 +2,12 @@ use anyhow::Result;
 use itertools::Itertools;
 use postgres::Client;
 use postgres::types::Type;
-use sqlparser::ast::{Ident, ObjectName, VisitMut, VisitorMut, visit_relations};
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
-use std::ops::ControlFlow;
-use crate::backfill::{Backfill, BatchedBackfill};
-use crate::replay::{LogTableReplay, Replay};
-use crate::column_map::ColumnMap;
+use crate::{BatchedBackfill, LogTableReplay, Replay, ColumnMap, Parse, SqlParser};
+use crate::backfill::Backfill;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
+use sqlparser::dialect::PostgreSqlDialect;
+use sqlparser::parser::Parser;
 
 #[derive(Clone)]
 pub struct PrimaryKeyInfo {
@@ -302,64 +299,6 @@ impl Migration {
             self.drop_shadow_table_if_exists(&mut client)?;
         }
         Ok(())
-    }
-}
-
-#[derive(Debug)]
-struct TableNameRewriter {
-    rename_table_from: String,
-    rename_table_to: String,
-}
-
-impl VisitorMut for TableNameRewriter {
-    type Break = ();
-
-    fn post_visit_relation(&mut self, object_name: &mut ObjectName) -> ControlFlow<Self::Break> {
-        if object_name.to_string() == self.rename_table_from {
-            *object_name = ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
-                Ident::new(&self.rename_table_to),
-            )]);
-        }
-        ControlFlow::Continue(())
-    }
-}
-
-pub trait Parse {
-    fn extract_tables(&self, sql: &str) -> Vec<String>;
-    fn migrate_shadow_table_statement(
-        &self,
-        ast: &[sqlparser::ast::Statement],
-        table_name: &str,
-        shadow_table_name: &str,
-    ) -> String;
-}
-
-pub struct SqlParser;
-
-impl Parse for SqlParser {
-    fn extract_tables(&self, sql: &str) -> Vec<String> {
-        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let mut tables = vec![];
-        let _ = visit_relations(&ast, |relation| {
-            tables.push(relation.to_string());
-            ControlFlow::<()>::Continue(())
-        });
-        tables
-    }
-
-    fn migrate_shadow_table_statement(
-        &self,
-        ast: &[sqlparser::ast::Statement],
-        table_name: &str,
-        shadow_table_name: &str,
-    ) -> String {
-        let mut rewriter = TableNameRewriter {
-            rename_table_from: table_name.to_string(),
-            rename_table_to: shadow_table_name.to_string(),
-        };
-        let mut altered_ast = ast.to_vec();
-        let _ = altered_ast.visit(&mut rewriter);
-        altered_ast[0].to_string()
     }
 }
 
