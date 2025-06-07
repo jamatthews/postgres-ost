@@ -31,7 +31,7 @@ sleep 2
 ./target/debug/postgres-ost replay-only --uri "postgres://post_test@localhost/post_test" --sql "ALTER TABLE pgbench_accounts ADD COLUMN "purchased" BOOLEAN DEFAULT FALSE;" &
 REPLAY_PID=$!
 wait $PGBENCH_PID
-kill $REPLAY_PID
+kill -INT $REPLAY_PID
 wait $REPLAY_PID 2>/dev/null || true
 
 # Print comparison table
