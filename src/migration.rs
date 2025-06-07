@@ -116,32 +116,131 @@ impl Migration {
         Ok(())
     }
 
-    pub fn orchestrate(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
+    pub fn create_triggers(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        // Insert trigger
+        let insert_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, id) VALUES ('INSERT', NEW.id);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
+            CREATE TRIGGER {table}_insert_trigger
+                AFTER INSERT ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name
+        );
+        client.batch_execute(&insert_trigger)?;
+
+        // Delete trigger
+        let delete_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, id) VALUES ('DELETE', OLD.id);
+                RETURN OLD;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
+            CREATE TRIGGER {table}_delete_trigger
+                AFTER DELETE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name
+        );
+        client.batch_execute(&delete_trigger)?;
+
+        // Update trigger
+        let update_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, id) VALUES ('UPDATE', NEW.id);
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
+            CREATE TRIGGER {table}_update_trigger
+                AFTER UPDATE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name
+        );
+        client.batch_execute(&update_trigger)?;
+
+        Ok(())
+    }
+
+    pub fn setup_migration(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>) -> anyhow::Result<()> {
         let mut client = pool.get()?;
-        // Leave the create schema in main
         self.drop_shadow_table_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
         self.create_column_map(&mut client)?;
         self.create_log_table(&mut client)?;
-        // Run backfill in a background thread
-        let table_name = self.table_name.clone();
-        let shadow_table_name = self.shadow_table_name.clone();
-        let mut replay_client = pool.get()?;
+        self.create_triggers(&mut client)?;
+        Ok(())
+    }
+
+    pub fn start_log_replay_thread(
+        &self,
+        pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
+        stop_replay: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    ) -> std::thread::JoinHandle<()> {
+        use std::sync::atomic::Ordering;
+        use std::thread;
+        use std::time::Duration;
+        let mut replay_client = pool.get().expect("Failed to get replay client");
         let replay = LogTableReplay {
             log_table_name: self.log_table_name.clone(),
-            shadow_table_name: shadow_table_name.clone(),
-            table_name: table_name.clone(),
+            shadow_table_name: self.shadow_table_name.clone(),
+            table_name: self.table_name.clone(),
             column_map: self.column_map.as_ref().expect("column_map must be set before replay").clone(),
         };
-        replay.replay_log(&mut replay_client)?;
+        let stop_replay_clone = stop_replay.clone();
+        thread::spawn(move || {
+            while !stop_replay_clone.load(Ordering::Relaxed) {
+                if let Err(e) = replay.replay_log(&mut replay_client) {
+                    eprintln!("replay_log error: {e}");
+                }
+                thread::sleep(Duration::from_millis(200));
+            }
+        })
+    }
 
-        let mut backfill_client = pool.get()?;
+    pub fn start_backfill_thread(
+        &self,
+        pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
+    ) -> std::thread::JoinHandle<anyhow::Result<()>> {
+        let table_name = self.table_name.clone();
+        let shadow_table_name = self.shadow_table_name.clone();
+        let mut backfill_client = pool.get().expect("Failed to get backfill client");
         let backfill = BatchedBackfill { batch_size: 1000 };
-        let backfill_handle = std::thread::spawn(move || {
-            backfill.backfill(&table_name, &shadow_table_name, &mut backfill_client).expect("Backfill failed");
-        });
-        backfill_handle.join().expect("Backfill thread panicked");
+        std::thread::spawn(move || {
+            backfill.backfill(&table_name, &shadow_table_name, &mut backfill_client)
+        })
+    }
+
+    pub fn orchestrate(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
+        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        self.setup_migration(pool)?;
+        let stop_replay = Arc::new(AtomicBool::new(false));
+        let replay_handle = self.start_log_replay_thread(pool, stop_replay.clone());
+        let backfill_handle = self.start_backfill_thread(pool);
+        backfill_handle.join().expect("Backfill thread panicked")?;
+        stop_replay.store(true, Ordering::Relaxed);
+        replay_handle.join().expect("Replay thread panicked");
+        // Ensure all log entries are replayed one last time
+        let mut client = pool.get()?;
         self.replay_log(&mut client)?;
         if execute {
             // TODO: need to lock table against writes, finish replay, then swap tables

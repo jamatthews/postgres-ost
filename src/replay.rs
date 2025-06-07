@@ -67,8 +67,20 @@ impl LogTableReplay {
                     id = id
                 );
                 statements.push(stmt);
+            } else if operation == "UPDATE" {
+                let id: i64 = row.get("id");
+                // Generate: UPDATE shadow SET col1 = main.col1, col2 = main.col2, ... WHERE id = {id}
+                let set_clause = shadow_cols.iter().zip(main_cols.iter())
+                    .map(|(shadow_col, main_col)| format!("{} = (SELECT {} FROM {} WHERE id = {})", shadow_col, main_col, self.table_name, id))
+                    .collect::<Vec<_>>().join(", ");
+                let stmt = format!(
+                    "UPDATE {shadow} SET {set_clause} WHERE id = {id}",
+                    shadow = self.shadow_table_name,
+                    set_clause = set_clause,
+                    id = id
+                );
+                statements.push(stmt);
             }
-            // Future: handle UPDATE
         }
         statements
     }
