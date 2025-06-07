@@ -1,7 +1,7 @@
 // src/pg_query_parser.rs
 
 use crate::Parse;
-use sqlparser::ast::Statement;
+use pg_query::{deparse, parse, NodeEnum};
 
 pub struct PgQueryParser;
 
@@ -35,11 +35,59 @@ impl Parse for PgQueryParser {
 
     fn migrate_shadow_table_statement(
         &self,
-        _ast: &[Statement],
-        _table_name: &str,
-        _shadow_table_name: &str,
+        sql: &str,
+        table_name: &str,
+        shadow_table_name: &str,
     ) -> String {
-        unimplemented!("migrate_shadow_table_statement is not implemented for PgQueryParser");
+        // Use pg_query to parse and rewrite the table name in the SQL statement
+        match parse(sql) {
+            Ok(mut result) => {
+                let mut changed = false;
+                for stmt in &mut result.protobuf.stmts {
+                    if let Some(node) = stmt.stmt.as_mut().map(|s| &mut s.node) {
+                        match node {
+                            Some(NodeEnum::AlterTableStmt(alter_table)) => {
+                                if let Some(relation) = &mut alter_table.relation {
+                                    if relation.relname == table_name {
+                                        relation.relname = shadow_table_name.to_string();
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            Some(NodeEnum::DropStmt(drop_stmt)) => {
+                                for obj in &mut drop_stmt.objects {
+                                    if let Some(NodeEnum::List(list)) = obj.node.as_mut() {
+                                        for item in &mut list.items {
+                                            if let Some(NodeEnum::String(s)) = item.node.as_mut() {
+                                                if s.sval == table_name {
+                                                    s.sval = shadow_table_name.to_string();
+                                                    changed = true;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Some(NodeEnum::RenameStmt(rename_stmt)) => {
+                                if let Some(relation) = &mut rename_stmt.relation {
+                                    if relation.relname == table_name {
+                                        relation.relname = shadow_table_name.to_string();
+                                        changed = true;
+                                    }
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                if changed {
+                    deparse(&result.protobuf).unwrap_or_else(|_| sql.to_string())
+                } else {
+                    sql.to_string()
+                }
+            }
+            Err(_) => sql.to_string(),
+        }
     }
 }
 
@@ -71,17 +119,14 @@ mod tests {
         assert_eq!(tables, vec!["test_table"]);
     }
 
-    // PgQueryParser does not implement migrate_shadow_table_statement, so this test is not applicable.
-    // #[test]
-    // fn test_migrate_shadow_table_statement() {
-    //     let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
-    //     let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-    //     let parser = SqlParser;
-    //     let rewritten =
-    //         parser.migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
-    //     assert_eq!(
-    //         rewritten,
-    //         "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
-    //     );
-    // }
+    #[test]
+    fn test_migrate_shadow_table_statement() {
+        let sql = "ALTER TABLE test_table ADD COLUMN id bigint";
+        let parser = PgQueryParser;
+        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        assert_eq!(
+            rewritten,
+            "ALTER TABLE \"post_migrations.test_table\" ADD COLUMN id bigint"
+        );
+    }
 }

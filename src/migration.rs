@@ -16,6 +16,7 @@ pub struct PrimaryKeyInfo {
 }
 
 pub struct Migration {
+    pub sql: String,
     pub ast: Vec<sqlparser::ast::Statement>,
     pub table_name: String,
     pub shadow_table_name: String,
@@ -42,6 +43,7 @@ impl Migration {
         let old_table_name = format!("post_migrations.{}_old", table_name);
         let primary_key = Self::get_primary_key_info(client, table_name).expect("Failed to detect primary key");
         Migration {
+            sql: sql.to_string(),
             ast: ast,
             table_name: table_name.to_string(),
             shadow_table_name: shadow_table_name.clone(),
@@ -71,7 +73,7 @@ impl Migration {
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let parser = SqlParser;
         let altered_statement =
-            parser.migrate_shadow_table_statement(&self.ast, &self.table_name, &self.shadow_table_name);
+            parser.migrate_shadow_table_statement(&self.sql, &self.table_name, &self.shadow_table_name);
         client.batch_execute(&altered_statement)?;
         Ok(())
     }

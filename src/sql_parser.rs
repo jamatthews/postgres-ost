@@ -1,9 +1,10 @@
 // src/sql_parser.rs
 
 use crate::Parse;
-use sqlparser::ast::{Ident, ObjectName, VisitMut, VisitorMut, visit_relations, Statement};
+use sqlparser::ast::{ObjectName, VisitMut, VisitorMut, visit_relations};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
+use sqlparser::ast::Ident;
 use std::ops::ControlFlow;
 
 #[derive(Debug)]
@@ -40,10 +41,11 @@ impl Parse for SqlParser {
 
     fn migrate_shadow_table_statement(
         &self,
-        ast: &[Statement],
+        sql: &str,
         table_name: &str,
         shadow_table_name: &str,
     ) -> String {
+        let ast = Parser::parse_sql(&PostgreSqlDialect {}, &sql).unwrap();
         let mut rewriter = TableNameRewriter {
             rename_table_from: table_name.to_string(),
             rename_table_to: shadow_table_name.to_string(),
@@ -57,8 +59,6 @@ impl Parse for SqlParser {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlparser::parser::Parser;
-    use sqlparser::dialect::PostgreSqlDialect;
 
     #[test]
     fn test_extract_tables() {
@@ -71,10 +71,9 @@ mod tests {
     #[test]
     fn test_migrate_shadow_table_statement() {
         let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
-        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
         let parser = SqlParser;
         let rewritten =
-            parser.migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
+            parser.migrate_shadow_table_statement(&sql, "test_table", "post_migrations.test_table");
         assert_eq!(
             rewritten,
             "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
