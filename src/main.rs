@@ -8,6 +8,7 @@ use args::*;
 mod migration;
 use migration::Migration;
 mod backfill;
+mod replay;
 
 fn main() -> Result<()> {
     let args = get_args()?;

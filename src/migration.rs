@@ -6,6 +6,7 @@ use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 use crate::backfill::{Backfill, BatchedBackfill};
+use crate::replay::{LogTableReplay, Replay};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -139,6 +140,14 @@ impl Migration {
         // Run backfill in a background thread
         let table_name = self.table_name.clone();
         let shadow_table_name = self.shadow_table_name.clone();
+        let mut replay_client = pool.get()?;
+        let replay = LogTableReplay {
+            log_table_name: self.log_table_name.clone(),
+            shadow_table_name: shadow_table_name.clone(),
+            table_name: table_name.clone(),
+        };
+        replay.replay_log(&mut replay_client)?;
+
         let mut backfill_client = pool.get()?;
         let backfill = BatchedBackfill { batch_size: 1000 };
         let backfill_handle = std::thread::spawn(move || {
