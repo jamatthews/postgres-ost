@@ -111,7 +111,7 @@ impl Migration {
     pub fn create_column_map(&mut self, client: &mut Client) -> Result<(), anyhow::Error> {
         let main_cols = get_table_columns(client, &self.table_name);
         let shadow_cols = get_table_columns(client, &self.shadow_table_name);
-        let map = ColumnMap::from_main_and_shadow(&main_cols, &shadow_cols);
+        let map = ColumnMap::new(&main_cols, &shadow_cols);
         self.column_map = Some(map);
         Ok(())
     }
