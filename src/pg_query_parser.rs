@@ -39,55 +39,69 @@ impl Parse for PgQueryParser {
         table_name: &str,
         shadow_table_name: &str,
     ) -> String {
-        // Use pg_query to parse and rewrite the table name in the SQL statement
-        match parse(sql) {
-            Ok(mut result) => {
-                let mut changed = false;
-                for stmt in &mut result.protobuf.stmts {
-                    if let Some(node) = stmt.stmt.as_mut().map(|s| &mut s.node) {
-                        match node {
-                            Some(NodeEnum::AlterTableStmt(alter_table)) => {
-                                if let Some(relation) = &mut alter_table.relation {
-                                    if relation.relname == table_name {
-                                        relation.relname = shadow_table_name.to_string();
-                                        changed = true;
+        // Split statements by semicolon and rewrite each one
+        let stmts: Vec<&str> = sql.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let mut rewritten_stmts = Vec::new();
+        for stmt in stmts {
+            let rewritten = match parse(stmt) {
+                Ok(mut result) => {
+                    let mut changed = false;
+                    for stmt in &mut result.protobuf.stmts {
+                        if let Some(node) = stmt.stmt.as_mut().map(|s| &mut s.node) {
+                            match node {
+                                Some(NodeEnum::AlterTableStmt(alter_table)) => {
+                                    if let Some(relation) = &mut alter_table.relation {
+                                        if relation.relname == table_name {
+                                            relation.relname = shadow_table_name.to_string();
+                                            changed = true;
+                                        }
                                     }
                                 }
-                            }
-                            Some(NodeEnum::DropStmt(drop_stmt)) => {
-                                for obj in &mut drop_stmt.objects {
-                                    if let Some(NodeEnum::List(list)) = obj.node.as_mut() {
-                                        for item in &mut list.items {
-                                            if let Some(NodeEnum::String(s)) = item.node.as_mut() {
-                                                if s.sval == table_name {
-                                                    s.sval = shadow_table_name.to_string();
-                                                    changed = true;
+                                Some(NodeEnum::DropStmt(drop_stmt)) => {
+                                    for obj in &mut drop_stmt.objects {
+                                        if let Some(NodeEnum::List(list)) = obj.node.as_mut() {
+                                            for item in &mut list.items {
+                                                if let Some(NodeEnum::String(s)) = item.node.as_mut() {
+                                                    if s.sval == table_name {
+                                                        s.sval = shadow_table_name.to_string();
+                                                        changed = true;
+                                                    }
                                                 }
                                             }
                                         }
                                     }
                                 }
-                            }
-                            Some(NodeEnum::RenameStmt(rename_stmt)) => {
-                                if let Some(relation) = &mut rename_stmt.relation {
-                                    if relation.relname == table_name {
-                                        relation.relname = shadow_table_name.to_string();
-                                        changed = true;
+                                Some(NodeEnum::RenameStmt(rename_stmt)) => {
+                                    if let Some(relation) = &mut rename_stmt.relation {
+                                        if relation.relname == table_name {
+                                            relation.relname = shadow_table_name.to_string();
+                                            changed = true;
+                                        }
                                     }
                                 }
+                                Some(NodeEnum::CreateStmt(create_stmt)) => {
+                                    if let Some(relation) = &mut create_stmt.relation {
+                                        if relation.relname == table_name {
+                                            relation.relname = shadow_table_name.to_string();
+                                            changed = true;
+                                        }
+                                    }
+                                }
+                                _ => {}
                             }
-                            _ => {}
                         }
                     }
+                    if changed {
+                        deparse(&result.protobuf).unwrap_or_else(|_| stmt.to_string())
+                    } else {
+                        stmt.to_string()
+                    }
                 }
-                if changed {
-                    deparse(&result.protobuf).unwrap_or_else(|_| sql.to_string())
-                } else {
-                    sql.to_string()
-                }
-            }
-            Err(_) => sql.to_string(),
+                Err(_) => stmt.to_string(),
+            };
+            rewritten_stmts.push(rewritten.trim().to_string());
         }
+        rewritten_stmts.join("; ")
     }
 }
 
@@ -128,5 +142,13 @@ mod tests {
             rewritten,
             "ALTER TABLE \"post_migrations.test_table\" ADD COLUMN id bigint"
         );
+    }
+
+    #[test]
+    fn test_migrate_shadow_table_statement_drop_and_create_partitioned() {
+        let sql = "DROP TABLE test_table; CREATE TABLE test_table (id bigint) PARTITION BY RANGE (id)";
+        let parser = PgQueryParser;
+        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        assert_eq!(rewritten, "DROP TABLE \"post_migrations.test_table\"; CREATE TABLE \"post_migrations.test_table\" (id bigint) PARTITION BY RANGE(id)");
     }
 }
