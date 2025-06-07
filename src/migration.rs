@@ -7,6 +7,7 @@ use sqlparser::parser::Parser;
 use std::ops::ControlFlow;
 use crate::backfill::{Backfill, BatchedBackfill};
 use crate::replay::{LogTableReplay, Replay};
+use crate::column_map::ColumnMap;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -16,7 +17,7 @@ pub struct Migration {
     pub shadow_table_name: String,
     pub log_table_name: String,
     pub old_table_name: String,
-    pub column_map: Option<crate::replay::ColumnMap>,
+    pub column_map: Option<ColumnMap>,
 }
 
 impl Migration {
@@ -110,7 +111,7 @@ impl Migration {
     pub fn create_column_map(&mut self, client: &mut Client) -> Result<(), anyhow::Error> {
         let main_cols = get_table_columns(client, &self.table_name);
         let shadow_cols = get_table_columns(client, &self.shadow_table_name);
-        let map = crate::replay::ColumnMap::from_main_and_shadow(&main_cols, &shadow_cols);
+        let map = ColumnMap::from_main_and_shadow(&main_cols, &shadow_cols);
         self.column_map = Some(map);
         Ok(())
     }

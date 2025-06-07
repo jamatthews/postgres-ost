@@ -9,6 +9,7 @@ mod migration;
 use migration::Migration;
 mod backfill;
 mod replay;
+mod column_map;
 
 fn main() -> Result<()> {
     let args = get_args()?;
