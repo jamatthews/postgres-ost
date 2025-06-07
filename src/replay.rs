@@ -5,7 +5,7 @@ use postgres::Client;
 use anyhow::Result;
 
 pub trait Replay {
-    fn replay_log(&self, client: &mut Client) -> Result<()>;
+    fn replay_log(&self, client: &mut Client, column_map: &ColumnMap) -> Result<()>;
 }
 
 pub struct LogTableReplay {
@@ -43,13 +43,10 @@ impl ColumnMap {
 }
 
 impl Replay for LogTableReplay {
-    fn replay_log(&self, client: &mut Client) -> Result<()> {
+    fn replay_log(&self, client: &mut Client, column_map: &ColumnMap) -> Result<()> {
         let mut txn = client.transaction()?;
-        let main_cols = get_table_columns(&mut txn, &self.table_name);
-        let shadow_cols = get_table_columns(&mut txn, &self.shadow_table_name);
-        let column_map = ColumnMap::from_main_and_shadow(&main_cols, &shadow_cols);
         let rows = self.fetch_batch(&mut txn, 100)?;
-        let statements = self.batch2sql(&rows, &column_map);
+        let statements = self.batch2sql(&rows, column_map);
         for stmt in statements {
             txn.batch_execute(&stmt)?;
         }
@@ -102,18 +99,4 @@ impl LogTableReplay {
         statements
     }
 
-}
-
-/// Helper to get the list of columns for a table (excluding dropped columns)
-fn get_table_columns<T: postgres::GenericClient>(client: &mut T, table: &str) -> Vec<String> {
-    let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
-        (schema, table)
-    } else {
-        ("public", table)
-    };
-    let rows = client.query(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        &[&schema, &table],
-    ).unwrap();
-    rows.iter().map(|row| row.get::<_, String>("column_name")).collect()
 }

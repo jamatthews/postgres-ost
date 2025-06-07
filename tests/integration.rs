@@ -96,7 +96,7 @@ mod integration {
     #[serial]
     fn test_orchestrate_add_column() {
         let mut client = setup_test_db();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
         // Simulate the main.rs logic: create schema, then orchestrate
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
         let manager = PostgresConnectionManager::new("postgres://post_test@localhost/post_test".parse().unwrap(), R2d2NoTls);
@@ -123,7 +123,7 @@ mod integration {
     #[serial]
     fn test_replay_log_insert() {
         let mut client = setup_test_db();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
         // Insert a row into the main table
@@ -135,6 +135,7 @@ mod integration {
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
         )).unwrap();
+        migration.create_column_map(&mut client).unwrap();
         // Replay the log
         migration.replay_log(&mut client).unwrap();
         // Check that the row is present in the shadow table
@@ -151,7 +152,7 @@ mod integration {
     fn test_replay_log_insert_with_removed_column() {
         let mut client = setup_test_db();
         // Migration removes the 'foo' column
-        let migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo");
+        let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo");
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap(); // Apply the migration to the shadow table
         migration.create_log_table(&mut client).unwrap();
@@ -164,6 +165,7 @@ mod integration {
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
         )).unwrap();
+        migration.create_column_map(&mut client).unwrap();
         // Replay the log (should insert into shadow table, which does not have 'foo')
         migration.replay_log(&mut client).unwrap();
         // Check that the row is present in the shadow table and 'foo' column does not exist
@@ -183,7 +185,7 @@ mod integration {
     fn test_replay_log_insert_with_renamed_column() {
         let mut client = setup_test_db();
         // Migration renames 'foo' to 'bar'
-        let migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar");
+        let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar");
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
@@ -196,6 +198,7 @@ mod integration {
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
         )).unwrap();
+        migration.create_column_map(&mut client).unwrap();
         // Replay the log (should insert into shadow table, which has 'bar' instead of 'foo')
         migration.replay_log(&mut client).unwrap();
         // Check that the row is present in the shadow table and the renamed column 'bar' has the correct value

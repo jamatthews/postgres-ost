@@ -16,6 +16,7 @@ pub struct Migration {
     pub shadow_table_name: String,
     pub log_table_name: String,
     pub old_table_name: String,
+    pub column_map: Option<crate::replay::ColumnMap>,
 }
 
 impl Migration {
@@ -38,6 +39,7 @@ impl Migration {
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
+            column_map: None,
         }
     }
 
@@ -79,12 +81,13 @@ impl Migration {
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        let column_map = self.column_map.as_ref().expect("column_map must be set before replay");
         let replay = LogTableReplay {
             log_table_name: self.log_table_name.clone(),
             shadow_table_name: self.shadow_table_name.clone(),
             table_name: self.table_name.clone(),
         };
-        replay.replay_log(client)?;
+        replay.replay_log(client, column_map)?;
         Ok(())
     }
 
@@ -103,12 +106,21 @@ impl Migration {
         Ok(())
     }
 
-    pub fn orchestrate(&self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
+    pub fn create_column_map(&mut self, client: &mut Client) -> Result<(), anyhow::Error> {
+        let main_cols = get_table_columns(client, &self.table_name);
+        let shadow_cols = get_table_columns(client, &self.shadow_table_name);
+        let map = crate::replay::ColumnMap::from_main_and_shadow(&main_cols, &shadow_cols);
+        self.column_map = Some(map);
+        Ok(())
+    }
+
+    pub fn orchestrate(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
         let mut client = pool.get()?;
         // Leave the create schema in main
         self.drop_shadow_table_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
+        self.create_column_map(&mut client)?;
         self.create_log_table(&mut client)?;
         // Run backfill in a background thread
         let table_name = self.table_name.clone();
@@ -119,7 +131,8 @@ impl Migration {
             shadow_table_name: shadow_table_name.clone(),
             table_name: table_name.clone(),
         };
-        replay.replay_log(&mut replay_client)?;
+        let column_map = self.column_map.as_ref().expect("column_map must be set before replay");
+        replay.replay_log(&mut replay_client, column_map)?;
 
         let mut backfill_client = pool.get()?;
         let backfill = BatchedBackfill { batch_size: 1000 };
@@ -204,4 +217,18 @@ mod tests {
             "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
         );
     }
+}
+
+// Helper to get the list of columns for a table (excluding dropped columns)
+fn get_table_columns(client: &mut Client, table: &str) -> Vec<String> {
+    let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
+        (schema, table)
+    } else {
+        ("public", table)
+    };
+    let rows = client.query(
+        "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+        &[&schema, &table],
+    ).unwrap();
+    rows.iter().map(|row| row.get::<_, String>("column_name")).collect()
 }

@@ -14,7 +14,7 @@ fn main() -> Result<()> {
     let args = get_args()?;
     let manager = PostgresConnectionManager::new(args.uri.parse()?, R2d2NoTls);
     let pool = Pool::new(manager)?;
-    let migration = Migration::new(&args.sql);
+    let mut migration = Migration::new(&args.sql);
     migration.orchestrate(&pool, args.execute)?;
     Ok(())
 }
