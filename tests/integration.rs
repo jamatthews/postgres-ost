@@ -28,7 +28,7 @@ mod integration {
     fn test_create_shadow_table() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         // Check that the shadow table exists
         let row = client.query_one(
@@ -44,7 +44,7 @@ mod integration {
     fn test_create_and_migrate_shadow_table() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
         // Check that the new column exists in the shadow table
@@ -61,7 +61,7 @@ mod integration {
     fn test_backfill_shadow_table() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         // Insert a row into the main table
         client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
@@ -83,7 +83,7 @@ mod integration {
     fn test_batched_backfill_shadow_table() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         // Insert two rows into the main table
         client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
@@ -106,7 +106,9 @@ mod integration {
     fn test_orchestrate_add_column() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
+        // Set primary_key for test context (workaround for regclass serialization)
+        migration.create_column_map(&mut client).unwrap();
         // Simulate the main.rs logic: create schema, then orchestrate
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
         let manager = PostgresConnectionManager::new("postgres://post_test@localhost/post_test".parse().unwrap(), R2d2NoTls);
@@ -134,7 +136,7 @@ mod integration {
     fn test_replay_log_insert() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
         // Insert a row into the main table
@@ -164,7 +166,7 @@ mod integration {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
         // Migration removes the 'foo' column
-        let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo");
+        let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap(); // Apply the migration to the shadow table
         migration.create_log_table(&mut client).unwrap();
@@ -198,7 +200,7 @@ mod integration {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
         // Migration renames 'foo' to 'bar'
-        let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar");
+        let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
@@ -231,7 +233,7 @@ mod integration {
     fn test_triggers_log_insert_update_delete() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
         migration.create_triggers(&mut client).unwrap();
@@ -274,7 +276,7 @@ mod integration {
 
         // Prepare migration
         let sql = "ALTER TABLE test_table ADD COLUMN extra TEXT";
-        let mut migration = Migration::new(sql);
+        let mut migration = Migration::new(sql, &mut client);
         migration.setup_migration(&pool).unwrap();
         migration.create_triggers(&mut client).unwrap();
 
@@ -318,7 +320,7 @@ mod integration {
     fn test_replay_log_update() {
         let pool = setup_test_db();
         let mut client = pool.get().unwrap();
-        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT");
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
         // Insert a row into the main table
@@ -349,5 +351,49 @@ mod integration {
         ).unwrap();
         let foo: String = row.get("foo");
         assert_eq!(foo, "after_update");
+    }
+
+    #[test]
+    #[serial]
+    fn test_replay_only_subcommand() {
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::Duration;
+        let _ = std::fs::remove_file("/tmp/postgres-ost-test.log");
+        let pool = setup_test_db();
+        let mut client = pool.get().unwrap();
+        // Insert a row before migration
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('before')").unwrap();
+        // Start the CLI with the replay-only subcommand
+        let mut child = Command::new(env!("CARGO_BIN_EXE_postgres-ost"))
+            .arg("replay-only")
+            .arg("--uri")
+            .arg("postgres://post_test@localhost/post_test")
+            .arg("--sql")
+            .arg("ALTER TABLE test_table ADD COLUMN bar TEXT")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("Failed to start replay-only subcommand");
+        // Give it a moment to start
+        thread::sleep(Duration::from_secs(2));
+        // Insert a row to generate log activity
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('after')").unwrap();
+        // Give the replay thread time to process
+        thread::sleep(Duration::from_secs(2));
+        // Send SIGINT to stop the process
+        child.kill().expect("Failed to kill replay-only process");
+        let output = child.wait_with_output().expect("Failed to get output");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        // Check that the shadow table has the new row
+        let row = client.query_one(
+            "SELECT foo FROM post_migrations.test_table WHERE foo = 'after'",
+            &[],
+        ).unwrap();
+        let foo: String = row.get("foo");
+        assert_eq!(foo, "after", "Row should be present in shadow table after replay-only");
+        // Optionally print output for debugging
+        eprintln!("stdout: {}\nstderr: {}", stdout, stderr);
     }
 }

@@ -11,6 +11,7 @@ postgres = "0.19.10"
 sqlparser = { version = "0.56.0", features = ["visitor"] }
 r2d2 = "0.8"
 r2d2_postgres = "0.18"
+ctrlc = "3.4.2"
 
 [dev-dependencies]
 serial_test = "3.0.0"

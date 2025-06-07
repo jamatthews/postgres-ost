@@ -4,13 +4,36 @@ use anyhow::Result;
 use r2d2::{Pool};
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 use postgres_ost::Migration;
-use postgres_ost::args::get_args;
+use postgres_ost::args::{get_args, Command};
+use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+use ctrlc;
 
 fn main() -> Result<()> {
     let args = get_args()?;
-    let manager = PostgresConnectionManager::new(args.uri.parse()?, R2d2NoTls);
-    let pool = Pool::new(manager)?;
-    let mut migration = Migration::new(&args.sql);
-    migration.orchestrate(&pool, args.execute)?;
+    match args.command {
+        Command::Migrate { uri, sql, execute } => {
+            let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
+            let pool = Pool::new(manager)?;
+            let mut client = pool.get()?;
+            let mut migration = Migration::new(&sql, &mut client);
+            migration.orchestrate(&pool, execute)?;
+        }
+        Command::ReplayOnly { uri, sql } => {
+            let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
+            let pool = Pool::new(manager)?;
+            let mut client = pool.get()?;
+            let mut migration = Migration::new(&sql, &mut client);
+            migration.setup_migration(&pool)?;
+            let stop_replay = Arc::new(AtomicBool::new(false));
+            let stop_replay_clone = stop_replay.clone();
+            ctrlc::set_handler(move || {
+                println!("Received shutdown signal. Stopping log replay...");
+                stop_replay_clone.store(true, Ordering::Relaxed);
+            })?;
+            let replay_handle = migration.start_log_replay_thread(&pool, stop_replay.clone());
+            println!("Log replay running. Press Ctrl+C to stop.");
+            replay_handle.join().expect("Replay thread panicked");
+        }
+    }
     Ok(())
 }

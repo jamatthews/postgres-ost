@@ -1,6 +1,7 @@
 use anyhow::Result;
 use itertools::Itertools;
 use postgres::Client;
+use postgres::types::Type;
 use sqlparser::ast::{Ident, ObjectName, VisitMut, VisitorMut, visit_relations};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
@@ -11,6 +12,12 @@ use crate::column_map::ColumnMap;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
+#[derive(Clone)]
+pub struct PrimaryKeyInfo {
+    pub name: String,
+    pub ty: Type,
+}
+
 pub struct Migration {
     pub ast: Vec<sqlparser::ast::Statement>,
     pub table_name: String,
@@ -18,10 +25,11 @@ pub struct Migration {
     pub log_table_name: String,
     pub old_table_name: String,
     pub column_map: Option<ColumnMap>,
+    pub primary_key: PrimaryKeyInfo,
 }
 
 impl Migration {
-    pub fn new(sql: &str) -> Self {
+    pub fn new(sql: &str, client: &mut Client) -> Self {
         let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
         let tables = extract_tables(sql);
         let unique_tables = tables.iter().unique().collect::<Vec<_>>();
@@ -34,6 +42,7 @@ impl Migration {
         let shadow_table_name = format!("post_migrations.{}", table_name);
         let log_table_name = format!("post_migrations.{}_log", table_name);
         let old_table_name = format!("post_migrations.{}_old", table_name);
+        let primary_key = Self::get_primary_key_info(client, table_name).expect("Failed to detect primary key");
         Migration {
             ast: ast,
             table_name: table_name.to_string(),
@@ -41,6 +50,7 @@ impl Migration {
             log_table_name: log_table_name.clone(),
             old_table_name: old_table_name.clone(),
             column_map: None,
+            primary_key,
         }
     }
 
@@ -88,6 +98,7 @@ impl Migration {
             shadow_table_name: self.shadow_table_name.clone(),
             table_name: self.table_name.clone(),
             column_map: column_map.clone(),
+            primary_key: self.primary_key.clone(),
         };
         replay.replay_log(client)?;
         Ok(())
@@ -116,13 +127,39 @@ impl Migration {
         Ok(())
     }
 
+    pub fn get_primary_key_info(client: &mut Client, table: &str) -> anyhow::Result<PrimaryKeyInfo> {
+        let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
+            (schema, table)
+        } else {
+            ("public", table)
+        };
+        let full_table = format!("{}.{}", schema, table);
+        let row = client.query_one(
+            "SELECT a.attname, a.atttypid::regtype::text
+             FROM pg_index i
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+             WHERE i.indrelid = ($1)::text::regclass AND i.indisprimary
+             LIMIT 1",
+            &[&full_table],
+        )?;
+        let name: String = row.get(0);
+        let type_name: String = row.get(1);
+        let ty = match type_name.as_str() {
+            "integer" => Type::INT4,
+            "bigint" => Type::INT8,
+            _ => panic!("Unsupported PK type: {}", type_name),
+        };
+        Ok(PrimaryKeyInfo { name, ty })
+    }
+
     pub fn create_triggers(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        let pk_col = &self.primary_key.name;
         // Insert trigger
         let insert_trigger = format!(
             r#"
             CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
             BEGIN
-                INSERT INTO {log_table} (operation, id) VALUES ('INSERT', NEW.id);
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('INSERT', NEW.{pk_col});
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
@@ -133,7 +170,8 @@ impl Migration {
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
             "#,
             log_table = self.log_table_name,
-            table = self.table_name
+            table = self.table_name,
+            pk_col = pk_col
         );
         client.batch_execute(&insert_trigger)?;
 
@@ -142,7 +180,7 @@ impl Migration {
             r#"
             CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
             BEGIN
-                INSERT INTO {log_table} (operation, id) VALUES ('DELETE', OLD.id);
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('DELETE', OLD.{pk_col});
                 RETURN OLD;
             END;
             $$ LANGUAGE plpgsql;
@@ -153,7 +191,8 @@ impl Migration {
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
             "#,
             log_table = self.log_table_name,
-            table = self.table_name
+            table = self.table_name,
+            pk_col = pk_col
         );
         client.batch_execute(&delete_trigger)?;
 
@@ -162,7 +201,7 @@ impl Migration {
             r#"
             CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
             BEGIN
-                INSERT INTO {log_table} (operation, id) VALUES ('UPDATE', NEW.id);
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('UPDATE', NEW.{pk_col});
                 RETURN NEW;
             END;
             $$ LANGUAGE plpgsql;
@@ -173,15 +212,22 @@ impl Migration {
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
             "#,
             log_table = self.log_table_name,
-            table = self.table_name
+            table = self.table_name,
+            pk_col = pk_col
         );
         client.batch_execute(&update_trigger)?;
 
         Ok(())
     }
 
+    fn create_post_migrations_schema(&self, client: &mut Client) -> anyhow::Result<()> {
+        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations;")?;
+        Ok(())
+    }
+
     pub fn setup_migration(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>) -> anyhow::Result<()> {
         let mut client = pool.get()?;
+        self.create_post_migrations_schema(&mut client)?;
         self.drop_shadow_table_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
@@ -205,6 +251,7 @@ impl Migration {
             shadow_table_name: self.shadow_table_name.clone(),
             table_name: self.table_name.clone(),
             column_map: self.column_map.as_ref().expect("column_map must be set before replay").clone(),
+            primary_key: self.primary_key.clone(),
         };
         let stop_replay_clone = stop_replay.clone();
         thread::spawn(move || {
@@ -232,6 +279,9 @@ impl Migration {
 
     pub fn orchestrate(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
         use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+        let client = pool.get()?;
+        // primary_key is already set in struct
+        drop(client);
         self.setup_migration(pool)?;
         let stop_replay = Arc::new(AtomicBool::new(false));
         let replay_handle = self.start_log_replay_thread(pool, stop_replay.clone());
