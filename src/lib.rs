@@ -7,6 +7,7 @@ pub mod replay;
 pub mod args;
 pub mod parse;
 pub mod sql_parser;
+pub mod pg_query_parser;
 
 // Re-export key types for ergonomic access
 
@@ -16,3 +17,4 @@ pub use migration::*;
 pub use replay::*;
 pub use parse::*;
 pub use sql_parser::*;
+pub use pg_query_parser::PgQueryParser;

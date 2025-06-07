@@ -53,3 +53,31 @@ impl Parse for SqlParser {
         altered_ast[0].to_string()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sqlparser::parser::Parser;
+    use sqlparser::dialect::PostgreSqlDialect;
+
+    #[test]
+    fn test_extract_tables() {
+        let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
+        let parser = SqlParser;
+        let tables = parser.extract_tables(sql);
+        assert_eq!(tables, vec!["test_table"]);
+    }
+
+    #[test]
+    fn test_migrate_shadow_table_statement() {
+        let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
+        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        let parser = SqlParser;
+        let rewritten =
+            parser.migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
+        assert_eq!(
+            rewritten,
+            "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
+        );
+    }
+}
