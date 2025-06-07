@@ -44,7 +44,6 @@ impl Migration {
     pub fn drop_shadow_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let drop_shadow_table_statement =
             format!("DROP TABLE IF EXISTS {}", self.shadow_table_name);
-        println!("Dropping shadow table:\n{:?}", drop_shadow_table_statement);
         client.simple_query(&drop_shadow_table_statement)?;
         Ok(())
     }
@@ -54,7 +53,6 @@ impl Migration {
             "CREATE TABLE {} (LIKE {} INCLUDING ALL)",
             self.shadow_table_name, self.table_name
         );
-        println!("Creating shadow table:\n{:?}", create_table_statement);
         client.simple_query(&create_table_statement)?;
         Ok(())
     }
@@ -62,7 +60,6 @@ impl Migration {
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let altered_statement =
             migrate_shadow_table_statement(&self.ast, &self.table_name, &self.shadow_table_name);
-        println!("Migrating shadow table:\n{:?}", altered_statement);
         client.batch_execute(&altered_statement)?;
         Ok(())
     }
@@ -72,7 +69,6 @@ impl Migration {
             "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
             self.log_table_name, self.table_name
         );
-        println!("Creating log table:\n{:?}", create_log_statement);
         client.simple_query(&create_log_statement)?;
         Ok(())
     }
@@ -94,7 +90,6 @@ impl Migration {
 
     pub fn drop_old_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table_name);
-        println!("Dropping old table:\n{:?}", drop_old_table_statement);
         client.simple_query(&drop_old_table_statement)?;
         Ok(())
     }
@@ -104,7 +99,6 @@ impl Migration {
             "BEGIN; ALTER TABLE {} RENAME TO {}; ALTER TABLE {} RENAME TO {}; COMMIT;",
             self.table_name, self.old_table_name, self.shadow_table_name, self.table_name
         );
-        println!("Swapping tables:\n{:?}", swap_statement);
         client.simple_query(&swap_statement)?;
         Ok(())
     }

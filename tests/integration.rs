@@ -177,4 +177,36 @@ mod integration {
         let err = client.query("SELECT foo FROM post_migrations.test_table WHERE id = $1", &[&id]);
         assert!(err.is_err(), "Column 'foo' should not exist in shadow table");
     }
+
+    #[test]
+    #[serial]
+    fn test_replay_log_insert_with_renamed_column() {
+        let mut client = setup_test_db();
+        // Migration renames 'foo' to 'bar'
+        let migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.migrate_shadow_table(&mut client).unwrap();
+        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table (with 'foo')
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_renamed')").unwrap();
+        // Log the insert operation manually
+        let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_renamed'", &[]).unwrap();
+        let id: i64 = row.get("id");
+        client.simple_query(&format!(
+            "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
+            migration.log_table_name, id
+        )).unwrap();
+        // Replay the log (should insert into shadow table, which has 'bar' instead of 'foo')
+        migration.replay_log(&mut client).unwrap();
+        // Check that the row is present in the shadow table and the renamed column 'bar' has the correct value
+        let row = client.query_one(
+            "SELECT id, bar FROM post_migrations.test_table WHERE id = $1",
+            &[&id],
+        ).unwrap();
+        let bar: String = row.get("bar");
+        assert_eq!(bar, "should_be_renamed");
+        // Confirm that selecting 'foo' from shadow table fails (column does not exist)
+        let err = client.query("SELECT foo FROM post_migrations.test_table WHERE id = $1", &[&id]);
+        assert!(err.is_err(), "Column 'foo' should not exist in shadow table");
+    }
 }
