@@ -30,8 +30,9 @@ pub struct Migration {
 
 impl Migration {
     pub fn new(sql: &str, client: &mut Client) -> Self {
+        let parser = SqlParser;
         let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-        let tables = extract_tables(sql);
+        let tables = parser.extract_tables(sql);
         let unique_tables = tables.iter().unique().collect::<Vec<_>>();
         assert!(
             unique_tables.len() == 1,
@@ -71,8 +72,9 @@ impl Migration {
     }
 
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+        let parser = SqlParser;
         let altered_statement =
-            migrate_shadow_table_statement(&self.ast, &self.table_name, &self.shadow_table_name);
+            parser.migrate_shadow_table_statement(&self.ast, &self.table_name, &self.shadow_table_name);
         client.batch_execute(&altered_statement)?;
         Ok(())
     }
@@ -322,28 +324,43 @@ impl VisitorMut for TableNameRewriter {
     }
 }
 
-fn extract_tables(sql: &str) -> Vec<String> {
-    let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
-    let mut tables = vec![];
-    let _ = visit_relations(&ast, |relation| {
-        tables.push(relation.to_string());
-        ControlFlow::<()>::Continue(())
-    });
-    tables
+pub trait Parse {
+    fn extract_tables(&self, sql: &str) -> Vec<String>;
+    fn migrate_shadow_table_statement(
+        &self,
+        ast: &[sqlparser::ast::Statement],
+        table_name: &str,
+        shadow_table_name: &str,
+    ) -> String;
 }
 
-fn migrate_shadow_table_statement(
-    ast: &[sqlparser::ast::Statement],
-    table_name: &str,
-    shadow_table_name: &str,
-) -> String {
-    let mut rewriter = TableNameRewriter {
-        rename_table_from: table_name.to_string(),
-        rename_table_to: shadow_table_name.to_string(),
-    };
-    let mut altered_ast = ast.to_vec();
-    let _ = altered_ast.visit(&mut rewriter);
-    altered_ast[0].to_string()
+pub struct SqlParser;
+
+impl Parse for SqlParser {
+    fn extract_tables(&self, sql: &str) -> Vec<String> {
+        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        let mut tables = vec![];
+        let _ = visit_relations(&ast, |relation| {
+            tables.push(relation.to_string());
+            ControlFlow::<()>::Continue(())
+        });
+        tables
+    }
+
+    fn migrate_shadow_table_statement(
+        &self,
+        ast: &[sqlparser::ast::Statement],
+        table_name: &str,
+        shadow_table_name: &str,
+    ) -> String {
+        let mut rewriter = TableNameRewriter {
+            rename_table_from: table_name.to_string(),
+            rename_table_to: shadow_table_name.to_string(),
+        };
+        let mut altered_ast = ast.to_vec();
+        let _ = altered_ast.visit(&mut rewriter);
+        altered_ast[0].to_string()
+    }
 }
 
 #[cfg(test)]
@@ -353,7 +370,8 @@ mod tests {
     #[test]
     fn test_extract_tables() {
         let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
-        let tables = extract_tables(sql);
+        let parser = SqlParser;
+        let tables = parser.extract_tables(sql);
         assert_eq!(tables, vec!["test_table"]);
     }
 
@@ -361,8 +379,9 @@ mod tests {
     fn test_migrate_shadow_table_statement() {
         let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
         let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
+        let parser = SqlParser;
         let rewritten =
-            migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
+            parser.migrate_shadow_table_statement(&ast, "test_table", "post_migrations.test_table");
         assert_eq!(
             rewritten,
             "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"
