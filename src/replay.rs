@@ -17,11 +17,18 @@ pub struct LogTableReplay {
 impl Replay for LogTableReplay {
     fn replay_log(&self, client: &mut Client) -> Result<()> {
         let mut txn = client.transaction()?;
-        // Fetch columns once per replay
+        // Build column mapping: Vec<(main_col, Option<shadow_col>)>
         let main_cols = get_table_columns(&mut txn, &self.table_name);
         let shadow_cols = get_table_columns(&mut txn, &self.shadow_table_name);
+        let column_map: Vec<(String, Option<String>)> = main_cols.iter().map(|main_col| {
+            if let Some(shadow_col) = shadow_cols.iter().find(|c| *c == main_col) {
+                (main_col.clone(), Some(shadow_col.clone()))
+            } else {
+                (main_col.clone(), None)
+            }
+        }).collect();
         let rows = self.fetch_batch(&mut txn, 100)?;
-        let statements = self.batch2sql(&rows, &main_cols, &shadow_cols);
+        let statements = self.batch2sql(&rows, &column_map);
         for stmt in statements {
             txn.batch_execute(&stmt)?;
         }
@@ -44,11 +51,14 @@ impl LogTableReplay {
     }
 
     /// Converts a batch of log table rows to SQL statements to replay the changes.
-    /// Handles DELETE and INSERT. For INSERT, only columns present in the shadow table are inserted.
-    pub fn batch2sql(&self, rows: &[postgres::Row], main_cols: &[String], shadow_cols: &[String]) -> Vec<String> {
+    /// Handles DELETE and INSERT. For INSERT, uses a mapping of main to shadow columns, supporting dropped and renamed columns.
+    pub fn batch2sql(&self, rows: &[postgres::Row], column_map: &[(String, Option<String>)]) -> Vec<String> {
         let mut statements = Vec::new();
-        let insert_cols: Vec<String> = shadow_cols.iter().filter(|c| main_cols.contains(c)).cloned().collect();
-        let insert_cols_csv = insert_cols.join(", ");
+        // Build the list of shadow columns and the corresponding main columns for SELECT
+        let shadow_cols: Vec<String> = column_map.iter().filter_map(|(_main, shadow)| shadow.clone()).collect();
+        let main_cols: Vec<String> = column_map.iter().filter_map(|(main, shadow)| shadow.as_ref().map(|_| main.clone())).collect();
+        let insert_cols_csv = shadow_cols.join(", ");
+        let select_cols_csv = main_cols.join(", ");
         for row in rows {
             let operation: String = row.get("operation");
             if operation == "DELETE" {
@@ -57,12 +67,13 @@ impl LogTableReplay {
                 statements.push(stmt);
             } else if operation == "INSERT" {
                 let id: i64 = row.get("id");
-                // Only insert columns that exist in the shadow table
+                // Insert only mapped columns (renamed/dropped handled by column_map)
                 let stmt = format!(
-                    "INSERT INTO {shadow} ({cols}) SELECT {cols} FROM {main} WHERE id = {id}",
+                    "INSERT INTO {shadow} ({cols}) SELECT {selectCols} FROM {main} WHERE id = {id}",
                     shadow = self.shadow_table_name,
                     main = self.table_name,
                     cols = insert_cols_csv,
+                    selectCols = select_cols_csv,
                     id = id
                 );
                 statements.push(stmt);
