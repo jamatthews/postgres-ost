@@ -145,4 +145,36 @@ mod integration {
         let foo: String = row.get("foo");
         assert_eq!(foo, "inserted");
     }
+
+    #[test]
+    #[serial]
+    fn test_replay_log_insert_with_removed_column() {
+        let mut client = setup_test_db();
+        // Migration removes the 'foo' column
+        let migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.migrate_shadow_table(&mut client).unwrap(); // Apply the migration to the shadow table
+        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table (with 'foo')
+        client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_ignored')").unwrap();
+        // Log the insert operation manually
+        let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_ignored'", &[]).unwrap();
+        let id: i64 = row.get("id");
+        client.simple_query(&format!(
+            "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
+            migration.log_table_name, id
+        )).unwrap();
+        // Replay the log (should insert into shadow table, which does not have 'foo')
+        migration.replay_log(&mut client).unwrap();
+        // Check that the row is present in the shadow table and 'foo' column does not exist
+        let row = client.query_one(
+            "SELECT id FROM post_migrations.test_table WHERE id = $1",
+            &[&id],
+        ).unwrap();
+        let id2: i64 = row.get("id");
+        assert_eq!(id2, id);
+        // Confirm that selecting 'foo' from shadow table fails (column does not exist)
+        let err = client.query("SELECT foo FROM post_migrations.test_table WHERE id = $1", &[&id]);
+        assert!(err.is_err(), "Column 'foo' should not exist in shadow table");
+    }
 }
