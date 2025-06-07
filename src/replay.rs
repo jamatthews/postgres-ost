@@ -49,8 +49,18 @@ impl LogTableReplay {
                 let id: i64 = row.get("id");
                 let stmt = format!("DELETE FROM {} WHERE id = {}", self.shadow_table_name, id);
                 statements.push(stmt);
+            } else if operation == "INSERT" {
+                let id: i64 = row.get("id");
+                // Insert the row from the main table into the shadow table. No NOT EXISTS check.
+                let stmt = format!(
+                    "INSERT INTO {shadow} SELECT * FROM {main} WHERE id = {id}",
+                    shadow = self.shadow_table_name,
+                    main = self.table_name,
+                    id = id
+                );
+                statements.push(stmt);
             }
-            // Future: handle INSERT, UPDATE
+            // Future: handle UPDATE
         }
         statements
     }

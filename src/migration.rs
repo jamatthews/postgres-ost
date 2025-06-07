@@ -83,33 +83,12 @@ impl Migration {
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let mut queries = Vec::new();
-        let log_query = format!("SELECT * FROM {} ORDER BY post_migration_log_id ASC", self.log_table_name);
-        let rows = client.query(&log_query, &[])?;
-        for row in rows {
-            let operation: String = row.get("operation");
-            if operation == "DELETE" {
-                let id: i64 = row.get("id");
-                let delete_query = format!("DELETE FROM {} WHERE id = {}", self.shadow_table_name, id);
-                queries.push(delete_query);
-            } else if operation == "INSERT" {
-                let id: i64 = row.get("id");
-                // Insert the row from the main table into the shadow table if not already present
-                let insert_query = format!(
-                    "INSERT INTO {shadow} SELECT * FROM {main} WHERE id = {id} AND NOT EXISTS (\
-                        SELECT 1 FROM {shadow} WHERE id = {id}\
-                    )",
-                    shadow = self.shadow_table_name,
-                    main = self.table_name,
-                    id = id
-                );
-                queries.push(insert_query);
-            }
-            // Future: handle UPDATE
-        }
-        for query in queries {
-            client.batch_execute(&query)?;
-        }
+        let replay = LogTableReplay {
+            log_table_name: self.log_table_name.clone(),
+            shadow_table_name: self.shadow_table_name.clone(),
+            table_name: self.table_name.clone(),
+        };
+        replay.replay_log(client)?;
         Ok(())
     }
 
