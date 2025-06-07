@@ -5,15 +5,17 @@ use postgres::Client;
 use anyhow::Result;
 
 pub trait Replay {
-    fn replay_log(&self, client: &mut Client, column_map: &ColumnMap) -> Result<()>;
+    fn replay_log(&self, client: &mut Client) -> Result<()>;
 }
 
 pub struct LogTableReplay {
     pub log_table_name: String,
     pub shadow_table_name: String,
     pub table_name: String,
+    pub column_map: ColumnMap,
 }
 
+#[derive(Clone)]
 pub struct ColumnMap(pub Vec<(String, Option<String>)>);
 
 impl ColumnMap {
@@ -43,10 +45,10 @@ impl ColumnMap {
 }
 
 impl Replay for LogTableReplay {
-    fn replay_log(&self, client: &mut Client, column_map: &ColumnMap) -> Result<()> {
+    fn replay_log(&self, client: &mut Client) -> Result<()> {
         let mut txn = client.transaction()?;
         let rows = self.fetch_batch(&mut txn, 100)?;
-        let statements = self.batch2sql(&rows, column_map);
+        let statements = self.batch2sql(&rows, &self.column_map);
         for stmt in statements {
             txn.batch_execute(&stmt)?;
         }

@@ -86,8 +86,9 @@ impl Migration {
             log_table_name: self.log_table_name.clone(),
             shadow_table_name: self.shadow_table_name.clone(),
             table_name: self.table_name.clone(),
+            column_map: column_map.clone(),
         };
-        replay.replay_log(client, column_map)?;
+        replay.replay_log(client)?;
         Ok(())
     }
 
@@ -130,9 +131,9 @@ impl Migration {
             log_table_name: self.log_table_name.clone(),
             shadow_table_name: shadow_table_name.clone(),
             table_name: table_name.clone(),
+            column_map: self.column_map.as_ref().expect("column_map must be set before replay").clone(),
         };
-        let column_map = self.column_map.as_ref().expect("column_map must be set before replay");
-        replay.replay_log(&mut replay_client, column_map)?;
+        replay.replay_log(&mut replay_client)?;
 
         let mut backfill_client = pool.get()?;
         let backfill = BatchedBackfill { batch_size: 1000 };
