@@ -5,6 +5,8 @@ use postgres::Client;
 use postgres::types::Type;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
+use std::fmt;
+use std::str::FromStr;
 
 #[derive(Clone)]
 pub struct PrimaryKeyInfo {
@@ -15,10 +17,10 @@ pub struct PrimaryKeyInfo {
 pub struct Migration {
     pub sql: String,
     pub shadow_table_migrate_sql: String,
-    pub table_name: String,
-    pub shadow_table_name: String,
+    pub table: Table,
+    pub shadow_table: Table,
     pub log_table_name: String,
-    pub old_table_name: String,
+    pub old_table: Table,
     pub column_map: Option<ColumnMap>,
     pub primary_key: PrimaryKeyInfo,
 }
@@ -29,20 +31,20 @@ impl Migration {
         let table_name = parser
             .extract_main_table(sql)
             .expect("Failed to extract main table");
-        let shadow_table_name = format!("post_migrations.{}", table_name);
+        let table = Table::new(&table_name);
+        let shadow_table = Table::new(&format!("post_migrations.{}", table_name));
         let log_table_name = format!("post_migrations.{}_log", table_name);
-        let old_table_name = format!("post_migrations.{}_old", table_name);
-        let primary_key =
-            Self::get_primary_key_info(client, &table_name).expect("Failed to detect primary key");
+        let old_table = Table::new(&format!("post_migrations.{}_old", table_name));
+        let primary_key = table.get_primary_key_info(client).expect("Failed to detect primary key");
         let shadow_table_migrate_sql =
-            parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table_name);
+            parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table.to_string());
         Migration {
             sql: sql.to_string(),
             shadow_table_migrate_sql,
-            table_name: table_name.to_string(),
-            shadow_table_name: shadow_table_name.clone(),
+            table,
+            shadow_table,
             log_table_name: log_table_name.clone(),
-            old_table_name: old_table_name.clone(),
+            old_table,
             column_map: None,
             primary_key,
         }
@@ -50,7 +52,7 @@ impl Migration {
 
     pub fn drop_shadow_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let drop_shadow_table_statement =
-            format!("DROP TABLE IF EXISTS {}", self.shadow_table_name);
+            format!("DROP TABLE IF EXISTS {}", self.shadow_table.to_string());
         client.simple_query(&drop_shadow_table_statement)?;
         Ok(())
     }
@@ -58,7 +60,7 @@ impl Migration {
     pub fn create_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let create_table_statement = format!(
             "CREATE TABLE {} (LIKE {} INCLUDING ALL)",
-            self.shadow_table_name, self.table_name
+            self.shadow_table.to_string(), self.table.to_string()
         );
         client.simple_query(&create_table_statement)?;
         Ok(())
@@ -81,8 +83,8 @@ impl Migration {
             .as_ref()
             .expect("column_map must be set before backfill");
         BatchedBackfill { batch_size: 1000 }.backfill(
-            &self.table_name,
-            &self.shadow_table_name,
+            &self.table.to_string(),
+            &self.shadow_table.to_string(),
             column_map,
             client,
         )
@@ -95,8 +97,8 @@ impl Migration {
             .expect("column_map must be set before replay");
         let replay = LogTableReplay {
             log_table_name: self.log_table_name.clone(),
-            shadow_table_name: self.shadow_table_name.clone(),
-            table_name: self.table_name.clone(),
+            shadow_table_name: self.shadow_table.to_string(),
+            table_name: self.table.to_string(),
             column_map: column_map.clone(),
             primary_key: self.primary_key.clone(),
         };
@@ -105,7 +107,7 @@ impl Migration {
     }
 
     pub fn drop_old_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table_name);
+        let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table.to_string());
         client.simple_query(&drop_old_table_statement)?;
         Ok(())
     }
@@ -113,46 +115,18 @@ impl Migration {
     pub fn swap_tables(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let swap_statement = format!(
             "BEGIN; ALTER TABLE {} RENAME TO {}; ALTER TABLE {} RENAME TO {}; COMMIT;",
-            self.table_name, self.old_table_name, self.shadow_table_name, self.table_name
+            self.table.to_string(), self.old_table.to_string(), self.shadow_table.to_string(), self.table.to_string()
         );
         client.simple_query(&swap_statement)?;
         Ok(())
     }
 
     pub fn create_column_map(&mut self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let main_cols = get_table_columns(client, &self.table_name);
-        let shadow_cols = get_table_columns(client, &self.shadow_table_name);
+        let main_cols = self.table.get_columns(client);
+        let shadow_cols = self.shadow_table.get_columns(client);
         let map = ColumnMap::new(&main_cols, &shadow_cols);
         self.column_map = Some(map);
         Ok(())
-    }
-
-    pub fn get_primary_key_info(
-        client: &mut Client,
-        table: &str,
-    ) -> anyhow::Result<PrimaryKeyInfo> {
-        let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
-            (schema, table)
-        } else {
-            ("public", table)
-        };
-        let full_table = format!("{}.{}", schema, table);
-        let row = client.query_one(
-            "SELECT a.attname, a.atttypid::regtype::text
-             FROM pg_index i
-             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
-             WHERE i.indrelid = ($1)::text::regclass AND i.indisprimary
-             LIMIT 1",
-            &[&full_table],
-        )?;
-        let name: String = row.get(0);
-        let type_name: String = row.get(1);
-        let ty = match type_name.as_str() {
-            "integer" => Type::INT4,
-            "bigint" => Type::INT8,
-            _ => panic!("Unsupported PK type: {}", type_name),
-        };
-        Ok(PrimaryKeyInfo { name, ty })
     }
 
     pub fn create_triggers(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
@@ -179,8 +153,8 @@ impl Migration {
         if let Some(ref column_map) = self.column_map {
             let replay = LogTableReplay {
                 log_table_name: self.log_table_name.clone(),
-                shadow_table_name: self.shadow_table_name.clone(),
-                table_name: self.table_name.clone(),
+                shadow_table_name: self.shadow_table.to_string(),
+                table_name: self.table.to_string(),
                 column_map: column_map.clone(),
                 primary_key: self.primary_key.clone(),
             };
@@ -200,8 +174,8 @@ impl Migration {
         let mut replay_client = pool.get().expect("Failed to get replay client");
         let replay = LogTableReplay {
             log_table_name: self.log_table_name.clone(),
-            shadow_table_name: self.shadow_table_name.clone(),
-            table_name: self.table_name.clone(),
+            shadow_table_name: self.shadow_table.to_string(),
+            table_name: self.table.to_string(),
             column_map: self
                 .column_map
                 .as_ref()
@@ -222,8 +196,8 @@ impl Migration {
         &self,
         pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
     ) -> std::thread::JoinHandle<anyhow::Result<()>> {
-        let table_name = self.table_name.clone();
-        let shadow_table_name = self.shadow_table_name.clone();
+        let table = self.table.clone();
+        let shadow_table = self.shadow_table.clone();
         let column_map = self
             .column_map
             .clone()
@@ -232,8 +206,8 @@ impl Migration {
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
             backfill.backfill(
-                &table_name,
-                &shadow_table_name,
+                &table.to_string(),
+                &shadow_table.to_string(),
                 &column_map,
                 &mut backfill_client,
             )
@@ -273,20 +247,69 @@ impl Migration {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct Table {
+    pub schema: Option<String>,
+    pub name: String,
+}
+
+impl FromStr for Table {
+    type Err = ();
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        if let Some((schema, name)) = s.split_once('.') {
+            Ok(Table { schema: Some(schema.to_string()), name: name.to_string() })
+        } else {
+            Ok(Table { schema: None, name: s.to_string() })
+        }
+    }
+}
+
+impl fmt::Display for Table {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match &self.schema {
+            Some(schema) => write!(f, "{}.{}", schema, self.name),
+            None => write!(f, "{}", self.name),
+        }
+    }
+}
+
+impl Table {
+    pub fn new(full_name: &str) -> Self {
+        full_name.parse().unwrap()
+    }
+
+    pub fn get_primary_key_info(&self, client: &mut Client) -> anyhow::Result<PrimaryKeyInfo> {
+        let full_table = self.to_string();
+        let row = client.query_one(
+            "SELECT a.attname, a.atttypid::regtype::text
+             FROM pg_index i
+             JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey)
+             WHERE i.indrelid = ($1)::text::regclass AND i.indisprimary
+             LIMIT 1",
+            &[&full_table],
+        )?;
+        let name: String = row.get(0);
+        let type_name: String = row.get(1);
+        let ty = match type_name.as_str() {
+            "integer" => Type::INT4,
+            "bigint" => Type::INT8,
+            _ => panic!("Unsupported PK type: {}", type_name),
+        };
+        Ok(PrimaryKeyInfo { name, ty })
+    }
+
+    pub fn get_columns(&self, client: &mut Client) -> Vec<String> {
+        let rows = client.query(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
+            &[&self.schema.as_ref().map(String::as_str).unwrap_or("public"), &self.name],
+        ).unwrap();
+        rows.iter()
+            .map(|row| row.get::<_, String>("column_name"))
+            .collect()
+    }
+}
+
 // Remove the moved tests from migration.rs
 
 // Helper to get the list of columns for a table (excluding dropped columns)
-fn get_table_columns(client: &mut Client, table: &str) -> Vec<String> {
-    let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
-        (schema, table)
-    } else {
-        ("public", table)
-    };
-    let rows = client.query(
-        "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-        &[&schema, &table],
-    ).unwrap();
-    rows.iter()
-        .map(|row| row.get::<_, String>("column_name"))
-        .collect()
-}
+// (Moved to Table::get_columns)

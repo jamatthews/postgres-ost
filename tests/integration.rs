@@ -112,8 +112,8 @@ mod integration {
         migration.create_column_map(&mut client).unwrap();
         let replay = postgres_ost::replay::LogTableReplay {
             log_table_name: migration.log_table_name.clone(),
-            shadow_table_name: migration.shadow_table_name.clone(),
-            table_name: migration.table_name.clone(),
+            shadow_table_name: migration.shadow_table.to_string(),
+            table_name: migration.table.to_string(),
             column_map: migration.column_map.as_ref().unwrap().clone(),
             primary_key: migration.primary_key.clone(),
         };
@@ -186,8 +186,8 @@ mod integration {
         let mut client = pool.get().unwrap();
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
         let mut migration = Migration::new(migration_sql, &mut client);
-        assert_eq!(migration.table_name, "test_table");
-        assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
+        assert_eq!(migration.table.to_string(), "test_table");
+        assert_eq!(migration.shadow_table.to_string(), "post_migrations.test_table");
         // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
         migration.setup_migration(pool).unwrap();
         // Now check if the shadow table has the new column
@@ -212,8 +212,8 @@ mod integration {
             CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
         let migration = postgres_ost::migration::Migration::new(migration_sql, &mut client);
-        assert_eq!(migration.table_name, "test_table");
-        assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
+        assert_eq!(migration.table.to_string(), "test_table");
+        assert_eq!(migration.shadow_table.to_string(), "post_migrations.test_table");
         assert!(
             migration
                 .shadow_table_migrate_sql
