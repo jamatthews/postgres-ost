@@ -191,4 +191,13 @@ mod integration {
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
         assert!(migration.shadow_table_migrate_sql.contains("CREATE TABLE post_migrations.test_table"));
     }
+
+    #[test]
+    fn test_drop_and_recreate_partitioned_table_with_concurrent_changes() {
+        let migration_sql = "DROP TABLE test_table; \
+            CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT) PARTITION BY HASH (id); \
+            CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
+            CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
+        run_concurrent_change_test(migration_sql);
+    }
 }

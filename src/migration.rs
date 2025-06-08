@@ -1,8 +1,7 @@
 use anyhow::Result;
-use itertools::Itertools;
 use postgres::Client;
 use postgres::types::Type;
-use crate::{BatchedBackfill, LogTableReplay, Replay, ColumnMap, Parse, SqlParser};
+use crate::{BatchedBackfill, LogTableReplay, Replay, ColumnMap, Parse};
 use crate::backfill::Backfill;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
