@@ -1,5 +1,5 @@
 use crate::table::Table;
-use postgres::Client;
+use postgres::GenericClient;
 
 /// Maps columns from the main table to the shadow table, handling renames and drops.
 #[derive(Clone)]
@@ -7,7 +7,7 @@ pub struct ColumnMap(Vec<(String, Option<String>)>);
 
 impl ColumnMap {
     /// Constructs a new `ColumnMap` from the main and shadow Table objects, fetching columns from the database.
-    pub fn new(main: &Table, shadow: &Table, client: &mut Client) -> Self {
+    pub fn new<C: GenericClient>(main: &Table, shadow: &Table, client: &mut C) -> Self {
         let main_cols = main.get_columns(client);
         let shadow_cols = shadow.get_columns(client);
         let mut map = Vec::new();

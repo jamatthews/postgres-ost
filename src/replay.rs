@@ -179,6 +179,21 @@ impl LogTableReplay {
 
         Ok(())
     }
+
+    /// Replays all log batches from the log table until it is empty, using the given transaction.
+    pub fn replay_log_until_complete(&self, txn: &mut postgres::Transaction) -> anyhow::Result<()> {
+        loop {
+            let rows = self.fetch_batch(txn, 100)?;
+            if rows.is_empty() {
+                break;
+            }
+            let statements = self.batch2sql(&rows, &self.column_map);
+            for stmt in statements {
+                txn.batch_execute(&stmt)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

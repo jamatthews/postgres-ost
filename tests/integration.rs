@@ -110,7 +110,7 @@ mod integration {
         let migration = Migration::new(alter_table_sql, &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
-        let column_map = ColumnMap::new(&migration.table, &migration.shadow_table, &mut client);
+        let column_map = ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
         let replay = postgres_ost::replay::LogTableReplay {
             log_table: migration.log_table.clone(),
             shadow_table: migration.shadow_table.clone(),

@@ -26,7 +26,7 @@ impl MigrationOrchestrator {
         let column_map = ColumnMap::new(
             &self.migration.table,
             &self.migration.shadow_table,
-            &mut replay_client,
+            &mut *replay_client,
         );
         let replay = LogTableReplay {
             log_table: self.migration.log_table.clone(),
@@ -48,7 +48,7 @@ impl MigrationOrchestrator {
         let table = self.migration.table.clone();
         let shadow_table = self.migration.shadow_table.clone();
         let mut backfill_client = self.pool.get().expect("Failed to get backfill client");
-        let column_map = ColumnMap::new(&table, &shadow_table, &mut backfill_client);
+        let column_map = ColumnMap::new(&table, &shadow_table, &mut *backfill_client);
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
             backfill.backfill(&table, &shadow_table, &column_map, &mut backfill_client)
@@ -69,13 +69,25 @@ impl MigrationOrchestrator {
         backfill_handle.join().expect("Backfill thread panicked")?;
         stop_replay.store(true, Ordering::Relaxed);
         replay_handle.join().expect("Replay thread panicked");
-        let mut client = self.pool.get()?;
-        self.migration.replay_log(&mut client)?;
+
         if execute {
-            self.migration.swap_tables(&mut client)?;
-            self.migration.old_table.drop_if_exists(&mut client)?;
-        } else {
-            self.migration.shadow_table.drop_if_exists(&mut client)?;
+            let mut client = self.pool.get()?;
+            let mut transaction = client.transaction()?;
+            let column_map = ColumnMap::new(
+                &self.migration.table,
+                &self.migration.shadow_table,
+                &mut transaction,
+            );
+            let replay = LogTableReplay {
+                log_table: self.migration.log_table.clone(),
+                shadow_table: self.migration.shadow_table.clone(),
+                table: self.migration.table.clone(),
+                column_map,
+                primary_key: self.migration.primary_key.clone(),
+            };
+            replay.replay_log_until_complete(&mut transaction)?;
+            self.migration.swap_tables(&mut transaction)?;
+            transaction.commit()?;
         }
         Ok(())
     }

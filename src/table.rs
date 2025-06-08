@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use postgres::Client;
+use postgres::GenericClient;
 use postgres::types::Type;
 use std::fmt;
 use std::str::FromStr;
@@ -64,7 +65,7 @@ impl Table {
         Ok(crate::PrimaryKeyInfo { name, ty })
     }
 
-    pub fn get_columns(&self, client: &mut Client) -> Vec<String> {
+    pub fn get_columns<C: GenericClient>(&self, client: &mut C) -> Vec<String> {
         let rows = client.query(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
             &[&self.schema.as_deref().unwrap_or("public"), &self.name],

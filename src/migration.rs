@@ -3,6 +3,7 @@ use crate::table::Table;
 use crate::{BatchedBackfill, LogTableReplay, Parse, Replay};
 use anyhow::Result;
 use postgres::Client;
+use postgres::GenericClient;
 use postgres::types::Type;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
@@ -99,7 +100,7 @@ impl Migration {
         self.shadow_table.drop_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
-        let column_map = ColumnMap::new(&self.table, &self.shadow_table, &mut client);
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, &mut *client);
         let replay = LogTableReplay {
             log_table: self.log_table.clone(),
             shadow_table: self.shadow_table.clone(),
@@ -111,7 +112,7 @@ impl Migration {
         Ok(())
     }
 
-    pub fn swap_tables(&self, client: &mut Client) -> Result<(), anyhow::Error> {
+    pub fn swap_tables<C: GenericClient>(&self, client: &mut C) -> Result<(), anyhow::Error> {
         let swap_statement = format!(
             "BEGIN; ALTER TABLE {} RENAME TO {}; ALTER TABLE {} RENAME TO {}; COMMIT;",
             self.table, self.old_table, self.shadow_table, self.table
