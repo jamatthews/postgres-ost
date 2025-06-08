@@ -89,6 +89,81 @@ impl LogTableReplay {
         statements
     }
 
+    /// Sets up the log table and triggers for logging changes on the main table.
+    pub fn setup(&self, client: &mut Client) -> Result<()> {
+        // Create log table
+        let create_log_statement = format!(
+            "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
+            self.log_table_name, self.table_name
+        );
+        client.simple_query(&create_log_statement)?;
+
+        let pk_col = &self.primary_key.name;
+        // Insert trigger
+        let insert_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('INSERT', NEW.{pk_col});
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
+            CREATE TRIGGER {table}_insert_trigger
+                AFTER INSERT ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name,
+            pk_col = pk_col
+        );
+        client.batch_execute(&insert_trigger)?;
+
+        // Delete trigger
+        let delete_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('DELETE', OLD.{pk_col});
+                RETURN OLD;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
+            CREATE TRIGGER {table}_delete_trigger
+                AFTER DELETE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name,
+            pk_col = pk_col
+        );
+        client.batch_execute(&delete_trigger)?;
+
+        // Update trigger
+        let update_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('UPDATE', NEW.{pk_col});
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
+            CREATE TRIGGER {table}_update_trigger
+                AFTER UPDATE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
+            "#,
+            log_table = self.log_table_name,
+            table = self.table_name,
+            pk_col = pk_col
+        );
+        client.batch_execute(&update_trigger)?;
+
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone)]

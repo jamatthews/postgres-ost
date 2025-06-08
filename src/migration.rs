@@ -73,12 +73,8 @@ impl Migration {
         Ok(())
     }
 
-    pub fn create_log_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let create_log_statement = format!(
-            "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
-            self.log_table_name, self.table_name
-        );
-        client.simple_query(&create_log_statement)?;
+    pub fn create_log_table(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
+        // Deprecated: use LogTableReplay::setup instead
         Ok(())
     }
 
@@ -148,71 +144,8 @@ impl Migration {
         Ok(PrimaryKeyInfo { name, ty })
     }
 
-    pub fn create_triggers(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let pk_col = &self.primary_key.name;
-        // Insert trigger
-        let insert_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('INSERT', NEW.{pk_col});
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
-            CREATE TRIGGER {table}_insert_trigger
-                AFTER INSERT ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
-            "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
-            pk_col = pk_col
-        );
-        client.batch_execute(&insert_trigger)?;
-
-        // Delete trigger
-        let delete_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('DELETE', OLD.{pk_col});
-                RETURN OLD;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
-            CREATE TRIGGER {table}_delete_trigger
-                AFTER DELETE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
-            "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
-            pk_col = pk_col
-        );
-        client.batch_execute(&delete_trigger)?;
-
-        // Update trigger
-        let update_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('UPDATE', NEW.{pk_col});
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
-            CREATE TRIGGER {table}_update_trigger
-                AFTER UPDATE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
-            "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
-            pk_col = pk_col
-        );
-        client.batch_execute(&update_trigger)?;
-
+    pub fn create_triggers(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
+        // Deprecated: use LogTableReplay::setup instead
         Ok(())
     }
 
@@ -228,8 +161,17 @@ impl Migration {
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
         self.create_column_map(&mut client)?;
-        self.create_log_table(&mut client)?;
-        self.create_triggers(&mut client)?;
+        // Use LogTableReplay for log table and trigger setup
+        if let Some(ref column_map) = self.column_map {
+            let replay = LogTableReplay {
+                log_table_name: self.log_table_name.clone(),
+                shadow_table_name: self.shadow_table_name.clone(),
+                table_name: self.table_name.clone(),
+                column_map: column_map.clone(),
+                primary_key: self.primary_key.clone(),
+            };
+            replay.setup(&mut client)?;
+        }
         Ok(())
     }
 

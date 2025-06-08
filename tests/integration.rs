@@ -159,11 +159,20 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table before setting up triggers
         client.simple_query("INSERT INTO test_table (foo) VALUES ('inserted')").unwrap();
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'inserted'", &[]).unwrap();
         let id: i64 = row.get("id");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
         client.simple_query(&format!(
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
@@ -186,10 +195,20 @@ mod integration {
         let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
-        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table before setting up triggers
         client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_ignored')").unwrap();
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_ignored'", &[]).unwrap();
         let id: i64 = row.get("id");
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
+
         client.simple_query(&format!(
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
@@ -212,12 +231,21 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar", &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap();
-        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table before setting up triggers
         client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_renamed')").unwrap();
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_renamed'", &[]).unwrap();
         let id: i64 = row.get("id");
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.migrate_shadow_table(&mut client).unwrap();
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
         client.simple_query(&format!(
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
@@ -239,10 +267,17 @@ mod integration {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
+        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
-        migration.create_log_table(&mut client).unwrap();
-        migration.create_triggers(&mut client).unwrap();
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
 
         // Insert
         client.simple_query("INSERT INTO test_table (foo) VALUES ('inserted')").unwrap();
@@ -312,10 +347,19 @@ mod integration {
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
-        migration.create_log_table(&mut client).unwrap();
+        // Insert a row into the main table before setting up triggers
         client.simple_query("INSERT INTO test_table (foo) VALUES ('before_update')").unwrap();
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'before_update'", &[]).unwrap();
         let id: i64 = row.get("id");
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
         client.simple_query(&format!(
             "INSERT INTO {} (operation, id) VALUES ('INSERT', {})",
             migration.log_table_name, id
