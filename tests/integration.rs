@@ -5,28 +5,54 @@ mod integration {
     use r2d2::Pool;
     use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
     use postgres_ost::migration::Migration;
-    use serial_test::serial;
+    use uuid::Uuid;
 
-    fn setup_test_db() -> Pool<PostgresConnectionManager<R2d2NoTls>> {
-        let manager = PostgresConnectionManager::new(
-            "postgres://post_test@localhost/post_test".parse().unwrap(),
-            R2d2NoTls,
-        );
-        let pool = Pool::new(manager).unwrap();
+    pub struct TestDb {
+        pub pool: Pool<PostgresConnectionManager<R2d2NoTls>>,
+        dbname: String,
+    }
+
+    impl Drop for TestDb {
+        fn drop(&mut self) {
+            // Connect to the default 'postgres' database to drop the test DB
+            let mut admin_client = postgres::Client::connect(
+                "postgres://post_test@localhost/postgres",
+                postgres::NoTls,
+            ).unwrap();
+            // Terminate all connections to the test DB before dropping
+            let terminate_sql = format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+                self.dbname
+            );
+            let _ = admin_client.simple_query(&terminate_sql);
+            let drop_sql = format!("DROP DATABASE IF EXISTS {}", self.dbname);
+            let _ = admin_client.simple_query(&drop_sql);
+        }
+    }
+
+    fn setup_test_db() -> TestDb {
+        let dbname = format!("test_db_{}", Uuid::new_v4().simple());
+        // Connect to the default 'postgres' database to create the test DB
+        let mut admin_client = postgres::Client::connect(
+            "postgres://post_test@localhost/postgres",
+            postgres::NoTls,
+        ).unwrap();
+        let create_sql = format!("CREATE DATABASE {}", dbname);
+        admin_client.simple_query(&create_sql).unwrap();
+        // Now connect to the new test DB
+        let db_url = format!("postgres://post_test@localhost/{}", dbname);
+        let manager = PostgresConnectionManager::new(db_url.parse().unwrap(), R2d2NoTls);
+        let pool = Pool::builder().max_size(3).build(manager).unwrap();
         let mut client = pool.get().unwrap();
-        // Drop just the test table, its sequence, and the post_migrations schema for simplicity
-        client.simple_query("DROP TABLE IF EXISTS public.test_table CASCADE").unwrap();
-        client.simple_query("DROP SEQUENCE IF EXISTS test_table_id_seq CASCADE").unwrap();
-        client.simple_query("DROP SCHEMA IF EXISTS post_migrations CASCADE").unwrap();
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
         client.simple_query("CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, foo TEXT)").unwrap();
-        pool
+        TestDb { pool, dbname }
     }
 
     #[test]
-    #[serial]
     fn test_create_shadow_table() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
@@ -40,9 +66,9 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_create_and_migrate_shadow_table() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
@@ -57,9 +83,9 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_backfill_shadow_table() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
@@ -79,9 +105,9 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_batched_backfill_shadow_table() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
@@ -102,26 +128,22 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_orchestrate_add_column() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
-        // Set primary_key for test context (workaround for regclass serialization)
         migration.create_column_map(&mut client).unwrap();
-        // Simulate the main.rs logic: create schema, then orchestrate
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
-        let manager = PostgresConnectionManager::new("postgres://post_test@localhost/post_test".parse().unwrap(), R2d2NoTls);
+        let manager = PostgresConnectionManager::new(format!("postgres://post_test@localhost/{}", test_db.dbname).parse().unwrap(), R2d2NoTls);
         let pool2 = Pool::new(manager).unwrap();
         migration.orchestrate(&pool2, false).unwrap();
-        // Check that the shadow table does not exist (since execute=false, it should be dropped at the end)
         let row = client.query_one(
             "SELECT to_regclass('post_migrations.test_table') IS NULL AS dropped",
             &[],
         ).unwrap();
         let dropped: bool = row.get("dropped");
         assert!(dropped, "Shadow table should be dropped after orchestration");
-        // Check that the original table is untouched and has the original data
         client.simple_query("INSERT INTO test_table (foo) VALUES ('hello')").unwrap();
         let row = client.query_one(
             "SELECT foo FROM test_table WHERE foo = 'hello'",
@@ -132,16 +154,14 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_replay_log_insert() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
-        // Insert a row into the main table
         client.simple_query("INSERT INTO test_table (foo) VALUES ('inserted')").unwrap();
-        // Log the insert operation manually
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'inserted'", &[]).unwrap();
         let id: i64 = row.get("id");
         client.simple_query(&format!(
@@ -149,9 +169,7 @@ mod integration {
             migration.log_table_name, id
         )).unwrap();
         migration.create_column_map(&mut client).unwrap();
-        // Replay the log
         migration.replay_log(&mut client).unwrap();
-        // Check that the row is present in the shadow table
         let row = client.query_one(
             "SELECT id, foo FROM post_migrations.test_table WHERE id = $1",
             &[&id],
@@ -161,18 +179,15 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_replay_log_insert_with_removed_column() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        // Migration removes the 'foo' column
         let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap(); // Apply the migration to the shadow table
+        migration.migrate_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
-        // Insert a row into the main table (with 'foo')
         client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_ignored')").unwrap();
-        // Log the insert operation manually
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_ignored'", &[]).unwrap();
         let id: i64 = row.get("id");
         client.simple_query(&format!(
@@ -180,33 +195,27 @@ mod integration {
             migration.log_table_name, id
         )).unwrap();
         migration.create_column_map(&mut client).unwrap();
-        // Replay the log (should insert into shadow table, which does not have 'foo')
         migration.replay_log(&mut client).unwrap();
-        // Check that the row is present in the shadow table and 'foo' column does not exist
         let row = client.query_one(
             "SELECT id FROM post_migrations.test_table WHERE id = $1",
             &[&id],
         ).unwrap();
         let id2: i64 = row.get("id");
         assert_eq!(id2, id);
-        // Confirm that selecting 'foo' from shadow table fails (column does not exist)
         let err = client.query("SELECT foo FROM post_migrations.test_table WHERE id = $1", &[&id]);
         assert!(err.is_err(), "Column 'foo' should not exist in shadow table");
     }
 
     #[test]
-    #[serial]
     fn test_replay_log_insert_with_renamed_column() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        // Migration renames 'foo' to 'bar'
         let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
-        // Insert a row into the main table (with 'foo')
         client.simple_query("INSERT INTO test_table (foo) VALUES ('should_be_renamed')").unwrap();
-        // Log the insert operation manually
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'should_be_renamed'", &[]).unwrap();
         let id: i64 = row.get("id");
         client.simple_query(&format!(
@@ -214,24 +223,21 @@ mod integration {
             migration.log_table_name, id
         )).unwrap();
         migration.create_column_map(&mut client).unwrap();
-        // Replay the log (should insert into shadow table, which has 'bar' instead of 'foo')
         migration.replay_log(&mut client).unwrap();
-        // Check that the row is present in the shadow table and the renamed column 'bar' has the correct value
         let row = client.query_one(
             "SELECT id, bar FROM post_migrations.test_table WHERE id = $1",
             &[&id],
         ).unwrap();
         let bar: String = row.get("bar");
         assert_eq!(bar, "should_be_renamed");
-        // Confirm that selecting 'foo' from shadow table fails (column does not exist)
         let err = client.query("SELECT foo FROM post_migrations.test_table WHERE id = $1", &[&id]);
         assert!(err.is_err(), "Column 'foo' should not exist in shadow table");
     }
 
     #[test]
-    #[serial]
     fn test_triggers_log_insert_update_delete() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
@@ -267,65 +273,47 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_concurrent_backfill_and_log_replay() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        // Insert some initial data
         client.execute("INSERT INTO test_table (foo) VALUES ($1)", &[&"before"]).unwrap();
-
-        // Prepare migration
         let sql = "ALTER TABLE test_table ADD COLUMN extra TEXT";
         let mut migration = Migration::new(sql, &mut client);
-        migration.setup_migration(&pool).unwrap();
+        migration.setup_migration(pool).unwrap();
         migration.create_triggers(&mut client).unwrap();
-
-        // Start log replay thread
         use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
         use std::thread;
         use std::time::Duration;
         let stop_replay = Arc::new(AtomicBool::new(false));
-        let replay_handle = migration.start_log_replay_thread(&pool, stop_replay.clone());
-
-        // Start backfill thread
-        let backfill_handle = migration.start_backfill_thread(&pool);
-
-        // While backfill is running, insert/update/delete rows
-        thread::sleep(Duration::from_millis(100)); // Let backfill start
+        let replay_handle = migration.start_log_replay_thread(pool, stop_replay.clone());
+        let backfill_handle = migration.start_backfill_thread(pool);
+        thread::sleep(Duration::from_millis(100));
         client.execute("INSERT INTO test_table (foo) VALUES ($1)", &[&"during1"]).unwrap();
         client.execute("INSERT INTO test_table (foo) VALUES ($1)", &[&"during2"]).unwrap();
         client.execute("UPDATE test_table SET foo = $1 WHERE foo = $2", &[&"updated", &"before"]).unwrap();
         client.execute("DELETE FROM test_table WHERE foo = $1", &[&"during1"]).unwrap();
-
-        // Wait for backfill to finish
         backfill_handle.join().expect("Backfill thread panicked").unwrap();
-        // Stop and join replay thread
         stop_replay.store(true, Ordering::Relaxed);
         replay_handle.join().expect("Replay thread panicked");
-        // Ensure all log entries are replayed one last time
         migration.replay_log(&mut client).unwrap();
-
-        // Check that shadow table has all expected rows and changes
         let mut shadow_client = pool.get().unwrap();
         let rows = shadow_client.query("SELECT foo FROM post_migrations.test_table ORDER BY id", &[]).unwrap();
         let values: Vec<String> = rows.iter().map(|r| r.get(0)).collect();
-        // Should have "updated" and "during2" ("during1" was deleted)
         assert!(values.contains(&"updated".to_string()));
         assert!(values.contains(&"during2".to_string()));
         assert!(!values.contains(&"during1".to_string()));
     }
 
     #[test]
-    #[serial]
     fn test_replay_log_update() {
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.create_log_table(&mut client).unwrap();
-        // Insert a row into the main table
         client.simple_query("INSERT INTO test_table (foo) VALUES ('before_update')").unwrap();
-        // Log the insert operation manually
         let row = client.query_one("SELECT id FROM test_table WHERE foo = 'before_update'", &[]).unwrap();
         let id: i64 = row.get("id");
         client.simple_query(&format!(
@@ -333,18 +321,13 @@ mod integration {
             migration.log_table_name, id
         )).unwrap();
         migration.create_column_map(&mut client).unwrap();
-        // Replay the log (should insert into shadow table)
         migration.replay_log(&mut client).unwrap();
-        // Now update the row in the main table
         client.simple_query("UPDATE test_table SET foo = 'after_update' WHERE id = 1").unwrap();
-        // Log the update operation manually
         client.simple_query(&format!(
             "INSERT INTO {} (operation, id) VALUES ('UPDATE', {})",
             migration.log_table_name, id
         )).unwrap();
-        // Replay the log (should update the shadow table)
         migration.replay_log(&mut client).unwrap();
-        // Check that the row is updated in the shadow table
         let row = client.query_one(
             "SELECT id, foo FROM post_migrations.test_table WHERE id = $1",
             &[&id],
@@ -354,46 +337,37 @@ mod integration {
     }
 
     #[test]
-    #[serial]
     fn test_replay_only_subcommand() {
         use std::process::{Command, Stdio};
         use std::thread;
         use std::time::Duration;
-        let _ = std::fs::remove_file("/tmp/postgres-ost-test.log");
-        let pool = setup_test_db();
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        // Insert a row before migration
         client.simple_query("INSERT INTO test_table (foo) VALUES ('before')").unwrap();
-        // Start the CLI with the replay-only subcommand
         let mut child = Command::new(env!("CARGO_BIN_EXE_postgres-ost"))
             .arg("replay-only")
             .arg("--uri")
-            .arg("postgres://post_test@localhost/post_test")
+            .arg(format!("postgres://post_test@localhost/{}", test_db.dbname))
             .arg("--sql")
             .arg("ALTER TABLE test_table ADD COLUMN bar TEXT")
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .expect("Failed to start replay-only subcommand");
-        // Give it a moment to start
         thread::sleep(Duration::from_secs(2));
-        // Insert a row to generate log activity
         client.simple_query("INSERT INTO test_table (foo) VALUES ('after')").unwrap();
-        // Give the replay thread time to process
         thread::sleep(Duration::from_secs(2));
-        // Send SIGINT to stop the process
         child.kill().expect("Failed to kill replay-only process");
         let output = child.wait_with_output().expect("Failed to get output");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Check that the shadow table has the new row
         let row = client.query_one(
             "SELECT foo FROM post_migrations.test_table WHERE foo = 'after'",
             &[],
         ).unwrap();
         let foo: String = row.get("foo");
         assert_eq!(foo, "after", "Row should be present in shadow table after replay-only");
-        // Optionally print output for debugging
         eprintln!("stdout: {}\nstderr: {}", stdout, stderr);
     }
 }

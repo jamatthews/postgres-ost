@@ -6,6 +6,9 @@ set -e
 # Create user 'post_test' if it doesn't exist
 psql -d postgres -tc "SELECT 1 FROM pg_roles WHERE rolname='post_test'" | grep -q 1 || psql -d postgres -c "CREATE USER post_test WITH PASSWORD 'post_test';"
 
+# Grant CREATEDB privilege to 'post_test' user
+psql -d postgres -c "ALTER USER post_test CREATEDB;"
+
 # Create database 'post_test' owned by 'post_test' if it doesn't exist
 psql -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='post_test'" | grep -q 1 || psql -d postgres -c "CREATE DATABASE post_test OWNER post_test;"
 

@@ -13,6 +13,7 @@ r2d2 = "0.8"
 r2d2_postgres = "0.18"
 ctrlc = "3.4.2"
 pg_query = "6.1.0"
+uuid = { version = "1.17.0", features = ["v4"] }
 
 [dev-dependencies]
 serial_test = "3.0.0"
