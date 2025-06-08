@@ -5,8 +5,6 @@ use anyhow::Result;
 use postgres::Client;
 use postgres::GenericClient;
 use postgres::types::Type;
-use r2d2::Pool;
-use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
 use crate::ColumnMap;
 
@@ -91,16 +89,12 @@ impl Migration {
         Ok(())
     }
 
-    pub fn setup_migration(
-        &self,
-        pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
-    ) -> anyhow::Result<()> {
-        let mut client = pool.get()?;
-        self.create_post_migrations_schema(&mut client)?;
-        self.shadow_table.drop_if_exists(&mut client)?;
-        self.create_shadow_table(&mut client)?;
-        self.migrate_shadow_table(&mut client)?;
-        let column_map = ColumnMap::new(&self.table, &self.shadow_table, &mut *client);
+    pub fn setup_migration(&self, client: &mut Client) -> anyhow::Result<()> {
+        self.create_post_migrations_schema(client)?;
+        self.shadow_table.drop_if_exists(client)?;
+        self.create_shadow_table(client)?;
+        self.migrate_shadow_table(client)?;
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
         let replay = LogTableReplay {
             log_table: self.log_table.clone(),
             shadow_table: self.shadow_table.clone(),
@@ -108,7 +102,7 @@ impl Migration {
             column_map,
             primary_key: self.primary_key.clone(),
         };
-        replay.setup(&mut client)?;
+        replay.setup(client)?;
         Ok(())
     }
 

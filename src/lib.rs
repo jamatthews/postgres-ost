@@ -33,9 +33,22 @@ pub fn run_replay_only(
 ) -> Result<()> {
     let mut client = pool.get()?;
     let migration = crate::migration::Migration::new(sql, &mut client);
-    migration.setup_migration(pool)?;
+    migration.setup_migration(&mut client)?;
     let orchestrator = crate::MigrationOrchestrator::new(migration, pool.clone());
-    let replay_handle = orchestrator.start_log_replay_thread(stop_replay.clone());
+    // Build ColumnMap and LogTableReplay for replay thread
+    let column_map = ColumnMap::new(
+        &orchestrator.migration.table,
+        &orchestrator.migration.shadow_table,
+        &mut *client,
+    );
+    let replay = LogTableReplay {
+        log_table: orchestrator.migration.log_table.clone(),
+        shadow_table: orchestrator.migration.shadow_table.clone(),
+        table: orchestrator.migration.table.clone(),
+        column_map,
+        primary_key: orchestrator.migration.primary_key.clone(),
+    };
+    let replay_handle = orchestrator.start_log_replay_thread(replay, stop_replay.clone());
     replay_handle.join().expect("Replay thread panicked");
     Ok(())
 }

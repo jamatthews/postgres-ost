@@ -23,6 +23,7 @@ fn main() -> Result<()> {
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
             let migration = Migration::new(&sql, &mut client);
+            drop(client);
             let orchestrator = postgres_ost::MigrationOrchestrator::new(migration, pool);
             orchestrator.orchestrate(execute)?;
         }

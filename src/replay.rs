@@ -16,6 +16,7 @@ pub trait Replay {
     ) -> anyhow::Result<()>;
 }
 
+#[derive(Clone)]
 pub struct LogTableReplay {
     pub log_table: Table,
     pub shadow_table: Table,
