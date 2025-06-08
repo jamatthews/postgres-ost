@@ -159,10 +159,18 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
-        let migration = Migration::new(migration_sql, &mut client);
+        let mut migration = Migration::new(migration_sql, &mut client);
         println!("shadow_table_migrate_sql: {}", migration.shadow_table_migrate_sql);
         assert_eq!(migration.table_name, "test_table");
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
-        assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
+        // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
+        migration.setup_migration(&pool).unwrap();
+        // Now check if the shadow table has the new column
+        let row = client.query_one(
+            "SELECT column_name FROM information_schema.columns WHERE table_schema = 'post_migrations' AND table_name = 'test_table' AND column_name = 'foo'",
+            &[],
+        ).unwrap();
+        let col: String = row.get("column_name");
+        assert_eq!(col, "foo");
     }
 }

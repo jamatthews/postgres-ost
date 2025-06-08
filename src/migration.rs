@@ -26,7 +26,7 @@ pub struct Migration {
 
 impl Migration {
     pub fn new(sql: &str, client: &mut Client) -> Self {
-        let parser = SqlParser;
+        let parser = crate::pg_query_parser::PgQueryParser;
         let tables = parser.extract_tables(sql);
         let unique_tables = tables.iter().unique().collect::<Vec<_>>();
         assert!(

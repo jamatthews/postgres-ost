@@ -42,6 +42,12 @@ impl Parse for PgQueryParser {
         // Split statements by semicolon and rewrite each one
         let stmts: Vec<&str> = sql.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
         let mut rewritten_stmts = Vec::new();
+        // Parse schema and table from shadow_table_name
+        let (shadow_schema, shadow_table) = if let Some((schema, table)) = shadow_table_name.split_once('.') {
+            (Some(schema.to_string()), table.to_string())
+        } else {
+            (None, shadow_table_name.to_string())
+        };
         for stmt in stmts {
             let rewritten = match parse(stmt) {
                 Ok(mut result) => {
@@ -52,7 +58,10 @@ impl Parse for PgQueryParser {
                                 Some(NodeEnum::AlterTableStmt(alter_table)) => {
                                     if let Some(relation) = &mut alter_table.relation {
                                         if relation.relname == table_name {
-                                            relation.relname = shadow_table_name.to_string();
+                                            relation.relname = shadow_table.clone();
+                                            if let Some(schema) = &shadow_schema {
+                                                relation.schemaname = schema.clone();
+                                            }
                                             changed = true;
                                         }
                                     }
@@ -60,11 +69,28 @@ impl Parse for PgQueryParser {
                                 Some(NodeEnum::DropStmt(drop_stmt)) => {
                                     for obj in &mut drop_stmt.objects {
                                         if let Some(NodeEnum::List(list)) = obj.node.as_mut() {
-                                            for item in &mut list.items {
-                                                if let Some(NodeEnum::String(s)) = item.node.as_mut() {
+                                            let len = list.items.len();
+                                            if len > 0 {
+                                                // Find the last String node (should be the table name)
+                                                if let Some(NodeEnum::String(s)) = list.items[len - 1].node.as_mut() {
                                                     if s.sval == table_name {
-                                                        s.sval = shadow_table_name.to_string();
+                                                        s.sval = shadow_table.clone();
                                                         changed = true;
+                                                        if let Some(schema) = &shadow_schema {
+                                                            // If schema is present, set or insert as the second-to-last String node
+                                                            if len > 1 {
+                                                                if let Some(NodeEnum::String(schema_node)) = list.items[len - 2].node.as_mut() {
+                                                                    schema_node.sval = schema.clone();
+                                                                }
+                                                            } else {
+                                                                // Insert schema node before table node
+                                                                list.items.insert(0, pg_query::protobuf::Node {
+                                                                    node: Some(NodeEnum::String(pg_query::protobuf::String {
+                                                                        sval: schema.clone(),
+                                                                    })),
+                                                                });
+                                                            }
+                                                        }
                                                     }
                                                 }
                                             }
@@ -74,7 +100,10 @@ impl Parse for PgQueryParser {
                                 Some(NodeEnum::RenameStmt(rename_stmt)) => {
                                     if let Some(relation) = &mut rename_stmt.relation {
                                         if relation.relname == table_name {
-                                            relation.relname = shadow_table_name.to_string();
+                                            relation.relname = shadow_table.clone();
+                                            if let Some(schema) = &shadow_schema {
+                                                relation.schemaname = schema.clone();
+                                            }
                                             changed = true;
                                         }
                                     }
@@ -82,7 +111,10 @@ impl Parse for PgQueryParser {
                                 Some(NodeEnum::CreateStmt(create_stmt)) => {
                                     if let Some(relation) = &mut create_stmt.relation {
                                         if relation.relname == table_name {
-                                            relation.relname = shadow_table_name.to_string();
+                                            relation.relname = shadow_table.clone();
+                                            if let Some(schema) = &shadow_schema {
+                                                relation.schemaname = schema.clone();
+                                            }
                                             changed = true;
                                         }
                                     }
@@ -90,7 +122,10 @@ impl Parse for PgQueryParser {
                                     for inh in &mut create_stmt.inh_relations {
                                         if let Some(NodeEnum::RangeVar(range_var)) = inh.node.as_mut() {
                                             if range_var.relname == table_name {
-                                                range_var.relname = shadow_table_name.to_string();
+                                                range_var.relname = shadow_table.clone();
+                                                if let Some(schema) = &shadow_schema {
+                                                    range_var.schemaname = schema.clone();
+                                                }
                                                 changed = true;
                                             }
                                         }
@@ -199,7 +234,7 @@ mod tests {
         let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         assert_eq!(
             rewritten,
-            "ALTER TABLE \"post_migrations.test_table\" ADD COLUMN id bigint"
+            "ALTER TABLE post_migrations.test_table ADD COLUMN id bigint"
         );
     }
 
@@ -208,7 +243,7 @@ mod tests {
         let sql = "DROP TABLE test_table; CREATE TABLE test_table (id bigint) PARTITION BY RANGE (id)";
         let parser = PgQueryParser;
         let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
-        assert_eq!(rewritten, "DROP TABLE \"post_migrations.test_table\"; CREATE TABLE \"post_migrations.test_table\" (id bigint) PARTITION BY RANGE(id)");
+        assert_eq!(rewritten, "DROP TABLE post_migrations.test_table; CREATE TABLE post_migrations.test_table (id bigint) PARTITION BY RANGE(id)");
     }
 
     #[test]
@@ -236,10 +271,10 @@ mod tests {
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
         let parser = PgQueryParser;
         let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
-        let expected = "DROP TABLE \"post_migrations.test_table\"; \
-            CREATE TABLE \"post_migrations.test_table\" (id bigserial PRIMARY KEY, assertable text, target text) PARTITION BY HASH(id); \
-            CREATE TABLE test_table_p0 PARTITION OF \"post_migrations.test_table\" FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
-            CREATE TABLE test_table_p1 PARTITION OF \"post_migrations.test_table\" FOR VALUES WITH (MODULUS 2, REMAINDER 1)";
+        let expected = "DROP TABLE post_migrations.test_table; \
+            CREATE TABLE post_migrations.test_table (id bigserial PRIMARY KEY, assertable text, target text) PARTITION BY HASH(id); \
+            CREATE TABLE test_table_p0 PARTITION OF post_migrations.test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
+            CREATE TABLE test_table_p1 PARTITION OF post_migrations.test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1)";
         let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
         assert_eq!(norm_lines(&rewritten), norm_lines(expected));
     }
