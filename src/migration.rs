@@ -6,8 +6,6 @@ use crate::{BatchedBackfill, LogTableReplay, Replay, ColumnMap, Parse, SqlParser
 use crate::backfill::Backfill;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
-use sqlparser::dialect::PostgreSqlDialect;
-use sqlparser::parser::Parser;
 
 #[derive(Clone)]
 pub struct PrimaryKeyInfo {
@@ -17,7 +15,7 @@ pub struct PrimaryKeyInfo {
 
 pub struct Migration {
     pub sql: String,
-    pub ast: Vec<sqlparser::ast::Statement>,
+    pub shadow_table_migrate_sql: String,
     pub table_name: String,
     pub shadow_table_name: String,
     pub log_table_name: String,
@@ -29,7 +27,6 @@ pub struct Migration {
 impl Migration {
     pub fn new(sql: &str, client: &mut Client) -> Self {
         let parser = SqlParser;
-        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
         let tables = parser.extract_tables(sql);
         let unique_tables = tables.iter().unique().collect::<Vec<_>>();
         assert!(
@@ -42,9 +39,10 @@ impl Migration {
         let log_table_name = format!("post_migrations.{}_log", table_name);
         let old_table_name = format!("post_migrations.{}_old", table_name);
         let primary_key = Self::get_primary_key_info(client, table_name).expect("Failed to detect primary key");
+        let shadow_table_migrate_sql = parser.migrate_shadow_table_statement(sql, table_name, &shadow_table_name);
         Migration {
             sql: sql.to_string(),
-            ast: ast,
+            shadow_table_migrate_sql,
             table_name: table_name.to_string(),
             shadow_table_name: shadow_table_name.clone(),
             log_table_name: log_table_name.clone(),
@@ -71,10 +69,7 @@ impl Migration {
     }
 
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let parser = SqlParser;
-        let altered_statement =
-            parser.migrate_shadow_table_statement(&self.sql, &self.table_name, &self.shadow_table_name);
-        client.batch_execute(&altered_statement)?;
+        client.batch_execute(&self.shadow_table_migrate_sql)?;
         Ok(())
     }
 
