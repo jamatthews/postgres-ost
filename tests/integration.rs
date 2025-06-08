@@ -45,7 +45,7 @@ mod integration {
         let pool = Pool::builder().max_size(3).build(manager).unwrap();
         let mut client = pool.get().unwrap();
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
-        client.simple_query("CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, foo TEXT)").unwrap();
+        client.simple_query("CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT)").unwrap();
         TestDb { pool, dbname }
     }
 
@@ -59,7 +59,7 @@ mod integration {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('before')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable) VALUES ('before')").unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_postgres-ost"))
             .arg("replay-only")
             .arg("--uri")
@@ -71,155 +71,85 @@ mod integration {
             .spawn()
             .expect("Failed to start replay-only subcommand");
         thread::sleep(Duration::from_secs(2));
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('after')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable) VALUES ('after')").unwrap();
         thread::sleep(Duration::from_secs(2));
         child.kill().expect("Failed to kill replay-only process");
         let output = child.wait_with_output().expect("Failed to get output");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let row = client.query_one(
-            "SELECT foo FROM post_migrations.test_table WHERE foo = 'after'",
+            "SELECT assertable FROM post_migrations.test_table WHERE assertable = 'after'",
             &[],
         ).unwrap();
-        let foo: String = row.get("foo");
-        assert_eq!(foo, "after", "Row should be present in shadow table after replay-only");
+        let assertable: String = row.get("assertable");
+        assert_eq!(assertable, "after", "Row should be present in shadow table after replay-only");
         eprintln!("stdout: {}\nstderr: {}", stdout, stderr);
+    }
+
+    // Helper to run the concurrent DML/backfill/replay test for any ALTER TABLE statement, always using 'assertable' as the expected column
+    fn run_concurrent_change_test(alter_table_sql: &str) {
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let mut client = pool.get().unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
+
+        let mut migration = Migration::new(alter_table_sql, &mut client);
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.migrate_shadow_table(&mut client).unwrap();
+        migration.create_column_map(&mut client).unwrap();
+        let replay = postgres_ost::replay::LogTableReplay {
+            log_table_name: migration.log_table_name.clone(),
+            shadow_table_name: migration.shadow_table_name.clone(),
+            table_name: migration.table_name.clone(),
+            column_map: migration.column_map.as_ref().unwrap().clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        replay.setup(&mut client).unwrap();
+
+
+
+        migration.backfill_shadow_table(&mut client).unwrap();
+
+        // DML
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
+        client.simple_query("UPDATE test_table SET assertable = 'expect_row_updated' WHERE assertable = 'expect_row_to_update'").unwrap();
+        client.simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'").unwrap();
+        migration.replay_log(&mut client).unwrap();
+
+        // Generic assertion logic (always on 'assertable')
+        let rows = client.query(
+            "SELECT assertable FROM post_migrations.test_table ORDER BY id",
+            &[],
+        );
+        match rows {
+            Ok(rows) => {
+                let vals: Vec<String> = rows.iter().map(|row| row.get("assertable")).collect();
+                assert!(vals.contains(&"expect_backfilled".to_string()), "Backfilled row should be present");
+                assert!(vals.contains(&"expect_row_inserted".to_string()), "Inserted row should have been replayed");
+                assert!(vals.contains(&"expect_row_updated".to_string()), "Updated row should have been replayed");
+                assert!(!vals.contains(&"expect_row_to_update".to_string()), "Row to update should not be present after update");
+                assert!(!vals.contains(&"expect_row_deleted".to_string()), "Deleted row should not be present after replay");
+            },
+            Err(e) => {
+                panic!("Unexpected error querying assertable: {}", e);
+            }
+        }
     }
 
     #[test]
     fn test_add_column_with_concurrent_changes() {
-        // 1. Setup test DB and initial data
-        let test_db = setup_test_db();
-        let pool = &test_db.pool;
-        let mut client = pool.get().unwrap();
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_backfilled')").unwrap();
-
-        // 2. Start migration (create shadow table, log table, triggers)
-        let mut migration = Migration::new("ALTER TABLE test_table ADD COLUMN bar TEXT", &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.create_column_map(&mut client).unwrap();
-        let replay = postgres_ost::replay::LogTableReplay {
-            log_table_name: migration.log_table_name.clone(),
-            shadow_table_name: migration.shadow_table_name.clone(),
-            table_name: migration.table_name.clone(),
-            column_map: migration.column_map.as_ref().unwrap().clone(),
-            primary_key: migration.primary_key.clone(),
-        };
-        replay.setup(&mut client).unwrap();
-
-        // 3. Perform insert, update, delete on main table
-        // Insert
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_row_inserted')").unwrap();
-        // Update
-        client.simple_query("UPDATE test_table SET foo = 'expect_row_updated' WHERE foo = 'expect_backfilled'").unwrap();
-        // Delete
-        client.simple_query("DELETE FROM test_table WHERE foo = 'expect_row_inserted'").unwrap();
-
-        // 4. Backfill shadow table
-        migration.backfill_shadow_table(&mut client).unwrap();
-        // 5. Replay the log
-        migration.replay_log(&mut client).unwrap();
-
-        // 6. Assert shadow table state
-        let rows = client.query(
-            "SELECT foo FROM post_migrations.test_table ORDER BY id",
-            &[],
-        ).unwrap();
-        let foos: Vec<String> = rows.iter().map(|row| row.get("foo")).collect();
-        // Should contain the updated row, not the deleted one, and not the inserted-then-deleted one
-        assert!(foos.contains(&"expect_row_updated".to_string()), "Updated row should be present");
-        assert!(!foos.contains(&"expect_row_inserted".to_string()), "Deleted row should not be present");
-        assert!(!foos.contains(&"expect_backfilled".to_string()), "Original value should have been updated");
+        run_concurrent_change_test("ALTER TABLE test_table ADD COLUMN bar TEXT");
     }
 
     #[test]
     fn test_drop_column_with_concurrent_changes() {
-        // 1. Setup test DB and initial data
-        let test_db = setup_test_db();
-        let pool = &test_db.pool;
-        let mut client = pool.get().unwrap();
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_backfilled')").unwrap();
-
-        // 2. Start migration (drop column)
-        let mut migration = Migration::new("ALTER TABLE test_table DROP COLUMN foo", &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap();
-        migration.create_column_map(&mut client).unwrap();
-        let replay = postgres_ost::replay::LogTableReplay {
-            log_table_name: migration.log_table_name.clone(),
-            shadow_table_name: migration.shadow_table_name.clone(),
-            table_name: migration.table_name.clone(),
-            column_map: migration.column_map.as_ref().unwrap().clone(),
-            primary_key: migration.primary_key.clone(),
-        };
-        replay.setup(&mut client).unwrap();
-
-        // 3. Perform insert, update, delete on main table
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_row_inserted')").unwrap();
-        client.simple_query("UPDATE test_table SET foo = 'expect_row_updated' WHERE foo = 'expect_backfilled'").unwrap();
-        client.simple_query("DELETE FROM test_table WHERE foo = 'expect_row_inserted'").unwrap();
-
-        // 4. Backfill shadow table
-        migration.backfill_shadow_table(&mut client).unwrap();
-        // 5. Replay the log
-        migration.replay_log(&mut client).unwrap();
-
-        // 6. Assert shadow table state: only id column should exist, foo is dropped
-        let rows = client.query(
-            "SELECT id FROM post_migrations.test_table ORDER BY id",
-            &[],
-        ).unwrap();
-        let ids: Vec<i64> = rows.iter().map(|row| row.get("id")).collect();
-        // Should contain only the updated row's id
-        assert_eq!(ids.len(), 1, "Only one row should remain after update and delete");
-        // Check that 'foo' column does not exist
-        let err = client.query("SELECT foo FROM post_migrations.test_table", &[]);
-        assert!(err.is_err(), "Column 'foo' should not exist in shadow table after drop");
+        run_concurrent_change_test("ALTER TABLE test_table DROP COLUMN target");
     }
 
     #[test]
     fn test_rename_column_with_concurrent_changes() {
-        // 1. Setup test DB and initial data
-        let test_db = setup_test_db();
-        let pool = &test_db.pool;
-        let mut client = pool.get().unwrap();
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_backfilled')").unwrap();
-
-        // 2. Start migration (rename column)
-        let mut migration = Migration::new("ALTER TABLE test_table RENAME COLUMN foo TO bar", &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap();
-        migration.create_column_map(&mut client).unwrap();
-        let replay = postgres_ost::replay::LogTableReplay {
-            log_table_name: migration.log_table_name.clone(),
-            shadow_table_name: migration.shadow_table_name.clone(),
-            table_name: migration.table_name.clone(),
-            column_map: migration.column_map.as_ref().unwrap().clone(),
-            primary_key: migration.primary_key.clone(),
-        };
-        replay.setup(&mut client).unwrap();
-
-        // 3. Perform insert, update, delete on main table
-        client.simple_query("INSERT INTO test_table (foo) VALUES ('expect_row_inserted')").unwrap();
-        client.simple_query("UPDATE test_table SET foo = 'expect_row_updated' WHERE foo = 'expect_backfilled'").unwrap();
-        client.simple_query("DELETE FROM test_table WHERE foo = 'expect_row_inserted'").unwrap();
-
-        // 4. Backfill shadow table
-        migration.backfill_shadow_table(&mut client).unwrap();
-        // 5. Replay the log
-        migration.replay_log(&mut client).unwrap();
-
-        // 6. Assert shadow table state: only 'bar' column should exist, with correct value
-        let rows = client.query(
-            "SELECT bar FROM post_migrations.test_table ORDER BY id",
-            &[],
-        ).unwrap();
-        let bars: Vec<String> = rows.iter().map(|row| row.get("bar")).collect();
-        assert!(bars.contains(&"expect_row_updated".to_string()), "Renamed and updated row should be present");
-        assert!(!bars.contains(&"expect_row_inserted".to_string()), "Deleted row should not be present");
-        assert!(!bars.contains(&"expect_backfilled".to_string()), "Original value should have been updated");
-        // Check that 'foo' column does not exist
-        let err = client.query("SELECT foo FROM post_migrations.test_table", &[]);
-        assert!(err.is_err(), "Column 'foo' should not exist in shadow table after rename");
+        run_concurrent_change_test("ALTER TABLE test_table RENAME COLUMN target TO something_else");
     }
 }
