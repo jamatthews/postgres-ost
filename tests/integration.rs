@@ -30,6 +30,9 @@ mod integration {
             .simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations")
             .unwrap();
         client
+            .simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations_old")
+            .unwrap();
+        client
             .simple_query(
                 "CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT)",
             )
@@ -235,5 +238,41 @@ mod integration {
             CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
         run_concurrent_change_test(migration_sql);
+    }
+
+    #[test]
+    fn test_full_migration_execute_swaps_tables() {
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let mut client = pool.get().unwrap();
+        // Insert a row into the original table
+        client
+            .simple_query(
+                "INSERT INTO test_table (assertable, target) VALUES ('before_swap', 't1')",
+            )
+            .unwrap();
+        // Prepare migration SQL
+        let migration_sql = "ALTER TABLE test_table ADD COLUMN swapped INTEGER DEFAULT 42;";
+        let migration = Migration::new(migration_sql, &mut client);
+        let orchestrator =
+            postgres_ost::MigrationOrchestrator::new(migration.clone(), pool.clone());
+        // Run the orchestrator in execute mode (performs swap)
+        orchestrator.orchestrate(true).unwrap();
+        // After swap, the new table should be in public, and have the new column
+        let row = client
+            .query_one(
+                "SELECT swapped FROM test_table WHERE assertable = 'before_swap'",
+                &[],
+            )
+            .unwrap();
+        let swapped: i32 = row.get("swapped");
+        assert_eq!(swapped, 42);
+        // The old table should exist in post_migrations_old
+        let row = client.query_one(
+            "SELECT assertable FROM post_migrations_old.test_table WHERE assertable = 'before_swap'",
+            &[],
+        ).unwrap();
+        let assertable: String = row.get("assertable");
+        assert_eq!(assertable, "before_swap");
     }
 }

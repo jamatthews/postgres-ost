@@ -113,16 +113,23 @@ impl Migration {
     }
 
     pub fn swap_tables<C: GenericClient>(&self, client: &mut C) -> Result<(), anyhow::Error> {
-        let swap_statement = format!(
-            "BEGIN; ALTER TABLE {} RENAME TO {}; ALTER TABLE {} RENAME TO {}; COMMIT;",
-            self.table, self.old_table, self.shadow_table, self.table
+        let move_old = format!(
+            "ALTER TABLE public.{table} SET SCHEMA post_migrations_old;",
+            table = self.table
         );
-        client.simple_query(&swap_statement)?;
+        client.batch_execute(&move_old)?;
+        // Move the shadow table into public schema
+        let move_shadow = format!(
+            "ALTER TABLE post_migrations.{table} SET SCHEMA public;",
+            table = self.table
+        );
+        client.batch_execute(&move_shadow)?;
         Ok(())
     }
 
     fn create_post_migrations_schema(&self, client: &mut Client) -> anyhow::Result<()> {
         client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations;")?;
+        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations_old;")?;
         Ok(())
     }
 }
