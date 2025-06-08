@@ -4,6 +4,7 @@ pub mod args;
 pub mod backfill;
 pub mod column_map;
 pub mod migration;
+mod orchestrator;
 pub mod parse;
 pub mod pg_query_parser;
 pub mod replay;
@@ -15,6 +16,7 @@ pub use self::table::*;
 pub use backfill::*;
 pub use column_map::*;
 pub use migration::*;
+pub use orchestrator::MigrationOrchestrator;
 pub use parse::*;
 pub use replay::*;
 
@@ -32,7 +34,7 @@ pub fn run_replay_only(
     let mut client = pool.get()?;
     let migration = crate::migration::Migration::new(sql, &mut client);
     migration.setup_migration(pool)?;
-    let orchestrator = crate::migration::MigrationOrchestrator::new(migration, pool.clone());
+    let orchestrator = crate::MigrationOrchestrator::new(migration, pool.clone());
     let replay_handle = orchestrator.start_log_replay_thread(stop_replay.clone());
     replay_handle.join().expect("Replay thread panicked");
     Ok(())
