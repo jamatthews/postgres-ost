@@ -23,7 +23,8 @@ fn main() -> Result<()> {
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
             let migration = Migration::new(&sql, &mut client);
-            migration.orchestrate(&pool, execute)?;
+            let orchestrator = postgres_ost::MigrationOrchestrator::new(migration, pool);
+            orchestrator.orchestrate(execute)?;
         }
         Command::ReplayOnly {
             uri,
