@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod integration {
     use postgres_ost::ColumnMap;
+    use postgres_ost::Replay;
     use postgres_ost::migration::Migration;
     use r2d2::Pool;
     use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};

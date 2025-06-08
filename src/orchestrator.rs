@@ -86,6 +86,7 @@ impl MigrationOrchestrator {
                 primary_key: self.migration.primary_key.clone(),
             };
             replay.replay_log_until_complete(&mut transaction)?;
+            replay.teardown(&mut transaction)?;
             self.migration.swap_tables(&mut transaction)?;
             transaction.commit()?;
         }

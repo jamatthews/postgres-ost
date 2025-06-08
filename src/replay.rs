@@ -8,6 +8,12 @@ use postgres::types::Type;
 
 pub trait Replay {
     fn replay_log(&self, client: &mut Client) -> Result<()>;
+    fn setup(&self, client: &mut Client) -> Result<()>;
+    fn teardown<C: postgres::GenericClient>(&self, client: &mut C) -> Result<()>;
+    fn replay_log_until_complete<C: postgres::GenericClient>(
+        &self,
+        client: &mut C,
+    ) -> anyhow::Result<()>;
 }
 
 pub struct LogTableReplay {
@@ -27,6 +33,124 @@ impl Replay for LogTableReplay {
             txn.batch_execute(&stmt)?;
         }
         txn.commit()?;
+        Ok(())
+    }
+
+    fn setup(&self, client: &mut Client) -> Result<()> {
+        // Create log table
+        let create_log_statement = format!(
+            "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
+            self.log_table, self.table
+        );
+        client.simple_query(&create_log_statement)?;
+
+        let pk_col = &self.primary_key.name;
+        // Insert trigger
+        let insert_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('INSERT', NEW.{pk_col});
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
+            CREATE TRIGGER {table}_insert_trigger
+                AFTER INSERT ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
+            "#,
+            log_table = self.log_table,
+            table = self.table,
+            pk_col = pk_col
+        );
+        client.batch_execute(&insert_trigger)?;
+
+        // Delete trigger
+        let delete_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('DELETE', OLD.{pk_col});
+                RETURN OLD;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
+            CREATE TRIGGER {table}_delete_trigger
+                AFTER DELETE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
+            "#,
+            log_table = self.log_table,
+            table = self.table,
+            pk_col = pk_col
+        );
+        client.batch_execute(&delete_trigger)?;
+
+        // Update trigger
+        let update_trigger = format!(
+            r#"
+            CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
+            BEGIN
+                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('UPDATE', NEW.{pk_col});
+                RETURN NEW;
+            END;
+            $$ LANGUAGE plpgsql;
+            
+            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
+            CREATE TRIGGER {table}_update_trigger
+                AFTER UPDATE ON {table}
+                FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
+            "#,
+            log_table = self.log_table,
+            table = self.table,
+            pk_col = pk_col
+        );
+        client.batch_execute(&update_trigger)?;
+
+        Ok(())
+    }
+
+    fn teardown<C: postgres::GenericClient>(&self, client: &mut C) -> Result<()> {
+        let drop_triggers_and_functions = format!(
+            r#"
+            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
+            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
+            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
+            DROP FUNCTION IF EXISTS {log_table}_insert_trigger_fn();
+            DROP FUNCTION IF EXISTS {log_table}_delete_trigger_fn();
+            DROP FUNCTION IF EXISTS {log_table}_update_trigger_fn();
+            "#,
+            table = self.table,
+            log_table = self.log_table
+        );
+        client.batch_execute(&drop_triggers_and_functions)?;
+        // Drop log table
+        let drop_log_table = format!("DROP TABLE IF EXISTS {};", self.log_table);
+        client.batch_execute(&drop_log_table)?;
+        Ok(())
+    }
+
+    fn replay_log_until_complete<C: postgres::GenericClient>(
+        &self,
+        client: &mut C,
+    ) -> anyhow::Result<()> {
+        loop {
+            let query = format!(
+                "DELETE FROM {} WHERE post_migration_log_id IN (\
+                    SELECT post_migration_log_id FROM {} ORDER BY post_migration_log_id ASC LIMIT $1\
+                ) RETURNING *",
+                self.log_table, self.log_table
+            );
+            let rows = client.query(&query, &[&100_i64])?;
+            if rows.is_empty() {
+                break;
+            }
+            let statements = self.batch2sql(&rows, &self.column_map);
+            for stmt in statements {
+                client.batch_execute(&stmt)?;
+            }
+        }
         Ok(())
     }
 }
@@ -102,97 +226,6 @@ impl LogTableReplay {
             }
         }
         statements
-    }
-
-    /// Sets up the log table and triggers for logging changes on the main table.
-    pub fn setup(&self, client: &mut Client) -> Result<()> {
-        // Create log table
-        let create_log_statement = format!(
-            "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
-            self.log_table, self.table
-        );
-        client.simple_query(&create_log_statement)?;
-
-        let pk_col = &self.primary_key.name;
-        // Insert trigger
-        let insert_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_insert_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('INSERT', NEW.{pk_col});
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_insert_trigger ON {table};
-            CREATE TRIGGER {table}_insert_trigger
-                AFTER INSERT ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
-            "#,
-            log_table = self.log_table,
-            table = self.table,
-            pk_col = pk_col
-        );
-        client.batch_execute(&insert_trigger)?;
-
-        // Delete trigger
-        let delete_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_delete_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('DELETE', OLD.{pk_col});
-                RETURN OLD;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_delete_trigger ON {table};
-            CREATE TRIGGER {table}_delete_trigger
-                AFTER DELETE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
-            "#,
-            log_table = self.log_table,
-            table = self.table,
-            pk_col = pk_col
-        );
-        client.batch_execute(&delete_trigger)?;
-
-        // Update trigger
-        let update_trigger = format!(
-            r#"
-            CREATE OR REPLACE FUNCTION {log_table}_update_trigger_fn() RETURNS trigger AS $$
-            BEGIN
-                INSERT INTO {log_table} (operation, {pk_col}) VALUES ('UPDATE', NEW.{pk_col});
-                RETURN NEW;
-            END;
-            $$ LANGUAGE plpgsql;
-            
-            DROP TRIGGER IF EXISTS {table}_update_trigger ON {table};
-            CREATE TRIGGER {table}_update_trigger
-                AFTER UPDATE ON {table}
-                FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
-            "#,
-            log_table = self.log_table,
-            table = self.table,
-            pk_col = pk_col
-        );
-        client.batch_execute(&update_trigger)?;
-
-        Ok(())
-    }
-
-    /// Replays all log batches from the log table until it is empty, using the given transaction.
-    pub fn replay_log_until_complete(&self, txn: &mut postgres::Transaction) -> anyhow::Result<()> {
-        loop {
-            let rows = self.fetch_batch(txn, 100)?;
-            if rows.is_empty() {
-                break;
-            }
-            let statements = self.batch2sql(&rows, &self.column_map);
-            for stmt in statements {
-                txn.batch_execute(&stmt)?;
-            }
-        }
-        Ok(())
     }
 }
 
