@@ -278,4 +278,14 @@ mod tests {
         let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
         assert_eq!(norm_lines(&rewritten), norm_lines(expected));
     }
+
+    #[test]
+    fn test_migrate_shadow_table_statement_with_non_public_schema() {
+        let sql = "ALTER TABLE my_schema.test_table ADD COLUMN foo TEXT; DROP TABLE my_schema.test_table;";
+        let parser = PgQueryParser;
+        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        let expected = "ALTER TABLE post_migrations.test_table ADD COLUMN foo text; DROP TABLE post_migrations.test_table";
+        let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
+        assert_eq!(norm_lines(&rewritten), norm_lines(expected));
+    }
 }

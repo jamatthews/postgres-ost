@@ -173,4 +173,22 @@ mod integration {
         let col: String = row.get("column_name");
         assert_eq!(col, "foo");
     }
+
+    #[test]
+    fn test_migration_new_with_partitioned_table_sql() {
+        // Use the test DB helper to ensure permissions and schema
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let mut client = pool.get().unwrap();
+        // Ensure the table exists for PK detection
+        client.batch_execute("DROP TABLE IF EXISTS test_table CASCADE; CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT);").unwrap();
+        let migration_sql = "DROP TABLE test_table; \
+            CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT) PARTITION BY HASH (id); \
+            CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
+            CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
+        let migration = postgres_ost::migration::Migration::new(migration_sql, &mut client);
+        assert_eq!(migration.table_name, "test_table");
+        assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
+        assert!(migration.shadow_table_migrate_sql.contains("CREATE TABLE post_migrations.test_table"));
+    }
 }

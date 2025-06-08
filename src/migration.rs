@@ -27,19 +27,12 @@ pub struct Migration {
 impl Migration {
     pub fn new(sql: &str, client: &mut Client) -> Self {
         let parser = crate::pg_query_parser::PgQueryParser;
-        let tables = parser.extract_tables(sql);
-        let unique_tables = tables.iter().unique().collect::<Vec<_>>();
-        assert!(
-            unique_tables.len() == 1,
-            "Only one table can be altered per migration. Found: {:?}",
-            unique_tables
-        );
-        let table_name = unique_tables[0];
+        let table_name = parser.extract_main_table(sql).expect("Failed to extract main table");
         let shadow_table_name = format!("post_migrations.{}", table_name);
         let log_table_name = format!("post_migrations.{}_log", table_name);
         let old_table_name = format!("post_migrations.{}_old", table_name);
-        let primary_key = Self::get_primary_key_info(client, table_name).expect("Failed to detect primary key");
-        let shadow_table_migrate_sql = parser.migrate_shadow_table_statement(sql, table_name, &shadow_table_name);
+        let primary_key = Self::get_primary_key_info(client, &table_name).expect("Failed to detect primary key");
+        let shadow_table_migrate_sql = parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table_name);
         Migration {
             sql: sql.to_string(),
             shadow_table_migrate_sql,
