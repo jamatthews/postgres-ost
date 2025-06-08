@@ -80,7 +80,8 @@ impl Migration {
 
     #[allow(dead_code)]
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        BatchedBackfill { batch_size: 1000 }.backfill(&self.table_name, &self.shadow_table_name, client)
+        let column_map = self.column_map.as_ref().expect("column_map must be set before backfill");
+        BatchedBackfill { batch_size: 1000 }.backfill(&self.table_name, &self.shadow_table_name, column_map, client)
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
@@ -208,10 +209,11 @@ impl Migration {
     ) -> std::thread::JoinHandle<anyhow::Result<()>> {
         let table_name = self.table_name.clone();
         let shadow_table_name = self.shadow_table_name.clone();
+        let column_map = self.column_map.clone().expect("column_map must be set before backfill");
         let mut backfill_client = pool.get().expect("Failed to get backfill client");
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
-            backfill.backfill(&table_name, &shadow_table_name, &mut backfill_client)
+            backfill.backfill(&table_name, &shadow_table_name, &column_map, &mut backfill_client)
         })
     }
 
