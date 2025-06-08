@@ -16,6 +16,14 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - name: Start PostgreSQL
+        run: sudo systemctl start postgresql
+      - name: Wait for PostgreSQL to be ready
+        run: |
+          for i in {1..10}; do
+            pg_isready -U postgres && break
+            sleep 1
+          done
       - name: Set up test database user
         run: |
           sudo -u postgres psql -c "CREATE USER post_test WITH SUPERUSER PASSWORD 'postgres';"
