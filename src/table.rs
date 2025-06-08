@@ -73,4 +73,10 @@ impl Table {
             .map(|row| row.get::<_, String>("column_name"))
             .collect()
     }
+
+    pub fn drop_if_exists(&self, client: &mut Client) -> anyhow::Result<()> {
+        let sql = format!("DROP TABLE IF EXISTS {}", self);
+        client.simple_query(&sql)?;
+        Ok(())
+    }
 }

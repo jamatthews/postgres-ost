@@ -49,12 +49,6 @@ impl Migration {
         }
     }
 
-    pub fn drop_shadow_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let drop_shadow_table_statement = format!("DROP TABLE IF EXISTS {}", self.shadow_table);
-        client.simple_query(&drop_shadow_table_statement)?;
-        Ok(())
-    }
-
     pub fn create_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let create_table_statement = format!(
             "CREATE TABLE {} (LIKE {} INCLUDING ALL)",
@@ -66,11 +60,6 @@ impl Migration {
 
     pub fn migrate_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         client.batch_execute(&self.shadow_table_migrate_sql)?;
-        Ok(())
-    }
-
-    pub fn create_log_table(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
-        // Deprecated: use LogTableReplay::setup instead
         Ok(())
     }
 
@@ -110,7 +99,7 @@ impl Migration {
     ) -> anyhow::Result<()> {
         let mut client = pool.get()?;
         self.create_post_migrations_schema(&mut client)?;
-        self.drop_shadow_table_if_exists(&mut client)?;
+        self.shadow_table.drop_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
         let column_map = self.create_column_map(&mut client);
@@ -187,16 +176,10 @@ impl Migration {
         self.replay_log(&mut client)?;
         if execute {
             self.swap_tables(&mut client)?;
-            self.drop_old_table_if_exists(&mut client)?;
+            self.old_table.drop_if_exists(&mut client)?;
         } else {
-            self.drop_shadow_table_if_exists(&mut client)?;
+            self.shadow_table.drop_if_exists(&mut client)?;
         }
-        Ok(())
-    }
-
-    pub fn drop_old_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table);
-        client.simple_query(&drop_old_table_statement)?;
         Ok(())
     }
 
