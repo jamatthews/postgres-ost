@@ -1,0 +1,37 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+      - name: Set up test database user
+        run: |
+          sudo -u postgres psql -c "CREATE USER post_test WITH SUPERUSER PASSWORD 'postgres';"
+      - name: Install system dependencies
+        run: sudo apt-get update && sudo apt-get install -y libpq-dev
+      - name: Build
+        run: cargo build --all --verbose
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+      - name: Clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
+      - name: Set POSTGRES_OST_TEST_DB_URL for tests
+        run: echo "POSTGRES_OST_TEST_DB_URL=postgres://post_test:postgres@localhost/post_test" >> $GITHUB_ENV
+      - name: Run tests
+        env:
+          PGUSER: post_test
+          PGPASSWORD: postgres
+          PGHOST: localhost
+        run: cargo test --all -- --nocapture

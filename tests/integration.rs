@@ -12,36 +12,17 @@ mod integration {
         dbname: String,
     }
 
-    impl Drop for TestDb {
-        fn drop(&mut self) {
-            // Connect to the default 'postgres' database to drop the test DB
-            let mut admin_client = postgres::Client::connect(
-                "postgres://post_test@localhost/postgres",
-                postgres::NoTls,
-            )
-            .unwrap();
-            // Terminate all connections to the test DB before dropping
-            let terminate_sql = format!(
-                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
-                self.dbname
-            );
-            let _ = admin_client.simple_query(&terminate_sql);
-            let drop_sql = format!("DROP DATABASE IF EXISTS {}", self.dbname);
-            let _ = admin_client.simple_query(&drop_sql);
-        }
-    }
-
     fn setup_test_db() -> TestDb {
+        let db_url = std::env::var("POSTGRES_OST_TEST_DB_URL")
+            .unwrap_or_else(|_| "postgres://post_test:postgres@localhost/postgres".to_string());
         let dbname = format!("test_db_{}", Uuid::new_v4().simple());
-        // Connect to the default 'postgres' database to create the test DB
-        let mut admin_client =
-            postgres::Client::connect("postgres://post_test@localhost/postgres", postgres::NoTls)
-                .unwrap();
+        // Connect to the default database to create the test DB
+        let mut admin_client = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
         let create_sql = format!("CREATE DATABASE {}", dbname);
         admin_client.simple_query(&create_sql).unwrap();
         // Now connect to the new test DB
-        let db_url = format!("postgres://post_test@localhost/{}", dbname);
-        let manager = PostgresConnectionManager::new(db_url.parse().unwrap(), R2d2NoTls);
+        let test_db_url = format!("postgres://post_test:postgres@localhost/{}", dbname);
+        let manager = PostgresConnectionManager::new(test_db_url.parse().unwrap(), R2d2NoTls);
         let pool = Pool::builder().max_size(3).build(manager).unwrap();
         let mut client = pool.get().unwrap();
         client
@@ -53,6 +34,22 @@ mod integration {
             )
             .unwrap();
         TestDb { pool, dbname }
+    }
+
+    impl Drop for TestDb {
+        fn drop(&mut self) {
+            let db_url = std::env::var("POSTGRES_OST_TEST_DB_URL")
+                .unwrap_or_else(|_| "postgres://post_test:postgres@localhost/postgres".to_string());
+            let mut admin_client = postgres::Client::connect(&db_url, postgres::NoTls).unwrap();
+            // Terminate all connections to the test DB before dropping
+            let terminate_sql = format!(
+                "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
+                self.dbname
+            );
+            let _ = admin_client.simple_query(&terminate_sql);
+            let drop_sql = format!("DROP DATABASE IF EXISTS {}", self.dbname);
+            let _ = admin_client.simple_query(&drop_sql);
+        }
     }
 
     #[test]
