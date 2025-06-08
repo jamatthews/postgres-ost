@@ -1,4 +1,10 @@
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
+
+#[derive(ValueEnum, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Strategy {
+    Triggers,
+    Logical,
+}
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -22,6 +28,10 @@ pub enum Command {
         /// Execute the migration (swap tables and drop old table)
         #[arg(short, long, default_value = "false")]
         execute: bool,
+
+        /// Change capture strategy: triggers (default) or logical
+        #[arg(long, value_enum, default_value_t = Strategy::Triggers)]
+        strategy: Strategy,
     },
     /// Run only migration setup and log replay (no backfill)
     ReplayOnly {
@@ -32,6 +42,10 @@ pub enum Command {
         /// ALTER TABLE statement
         #[arg(short, long)]
         sql: String,
+
+        /// Change capture strategy: triggers (default) or logical
+        #[arg(long, value_enum, default_value_t = Strategy::Triggers)]
+        strategy: Strategy,
     },
 }
 

@@ -11,14 +11,14 @@ use ctrlc;
 fn main() -> Result<()> {
     let args = get_args()?;
     match args.command {
-        Command::Migrate { uri, sql, execute } => {
+        Command::Migrate { uri, sql, execute, strategy: _ } => {
             let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
             let mut migration = Migration::new(&sql, &mut client);
             migration.orchestrate(&pool, execute)?;
         }
-        Command::ReplayOnly { uri, sql } => {
+        Command::ReplayOnly { uri, sql, strategy: _ } => {
             let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
