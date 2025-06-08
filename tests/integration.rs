@@ -152,4 +152,17 @@ mod integration {
     fn test_rename_column_with_concurrent_changes() {
         run_concurrent_change_test("ALTER TABLE test_table RENAME COLUMN target TO something_else");
     }
+
+    #[test]
+    fn test_migration_new_with_simple_add_column() {
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let mut client = pool.get().unwrap();
+        let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
+        let migration = Migration::new(migration_sql, &mut client);
+        println!("shadow_table_migrate_sql: {}", migration.shadow_table_migrate_sql);
+        assert_eq!(migration.table_name, "test_table");
+        assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
+        assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
+    }
 }
