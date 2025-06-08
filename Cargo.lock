@@ -813,7 +813,6 @@ dependencies = [
  "r2d2",
  "r2d2_postgres",
  "serial_test",
- "sqlparser",
  "uuid",
 ]
 
@@ -927,15 +926,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "psm"
-version = "0.1.26"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6e944464ec8536cd1beb0bbfd96987eb5e3b72f2ecdafdc5c769a37f1fa2ae1f"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "quote"
 version = "1.0.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -998,26 +988,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "99d9a13982dcf210057a8a78572b2217b667c3beacbf3a0d8b454f6f82837d38"
 dependencies = [
  "getrandom",
-]
-
-[[package]]
-name = "recursive"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0786a43debb760f491b1bc0269fe5e84155353c67482b9e60d0cfb596054b43e"
-dependencies = [
- "recursive-proc-macro-impl",
- "stacker",
-]
-
-[[package]]
-name = "recursive-proc-macro-impl"
-version = "0.1.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "76009fbe0614077fc1a2ce255e3a1881a2e3a3527097d5dc6d8212c585e7e38b"
-dependencies = [
- "quote",
- "syn",
 ]
 
 [[package]]
@@ -1241,41 +1211,6 @@ checksum = "4f5fd57c80058a56cf5c777ab8a126398ece8e442983605d280a44ce79d0edef"
 dependencies = [
  "libc",
  "windows-sys 0.52.0",
-]
-
-[[package]]
-name = "sqlparser"
-version = "0.56.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e68feb51ffa54fc841e086f58da543facfe3d7ae2a60d69b0a8cbbd30d16ae8d"
-dependencies = [
- "log",
- "recursive",
- "sqlparser_derive",
-]
-
-[[package]]
-name = "sqlparser_derive"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "da5fc6819faabb412da764b99d3b713bb55083c11e7e0c00144d386cd6a1939c"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn",
-]
-
-[[package]]
-name = "stacker"
-version = "0.1.21"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cddb07e32ddb770749da91081d8d0ac3a16f1a569a18b20348cd371f5dead06b"
-dependencies = [
- "cc",
- "cfg-if",
- "libc",
- "psm",
- "windows-sys 0.59.0",
 ]
 
 [[package]]
