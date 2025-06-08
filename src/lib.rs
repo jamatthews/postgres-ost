@@ -5,8 +5,8 @@ pub mod backfill;
 pub mod column_map;
 pub mod migration;
 pub mod parse;
-pub mod replay;
 pub mod pg_query_parser;
+pub mod replay;
 
 // Re-export key types for ergonomic access
 
