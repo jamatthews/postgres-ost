@@ -1,8 +1,8 @@
+use crate::backfill::Backfill;
+use crate::{BatchedBackfill, ColumnMap, LogTableReplay, Parse, Replay};
 use anyhow::Result;
 use postgres::Client;
 use postgres::types::Type;
-use crate::{BatchedBackfill, LogTableReplay, Replay, ColumnMap, Parse};
-use crate::backfill::Backfill;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -26,12 +26,16 @@ pub struct Migration {
 impl Migration {
     pub fn new(sql: &str, client: &mut Client) -> Self {
         let parser = crate::pg_query_parser::PgQueryParser;
-        let table_name = parser.extract_main_table(sql).expect("Failed to extract main table");
+        let table_name = parser
+            .extract_main_table(sql)
+            .expect("Failed to extract main table");
         let shadow_table_name = format!("post_migrations.{}", table_name);
         let log_table_name = format!("post_migrations.{}_log", table_name);
         let old_table_name = format!("post_migrations.{}_old", table_name);
-        let primary_key = Self::get_primary_key_info(client, &table_name).expect("Failed to detect primary key");
-        let shadow_table_migrate_sql = parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table_name);
+        let primary_key =
+            Self::get_primary_key_info(client, &table_name).expect("Failed to detect primary key");
+        let shadow_table_migrate_sql =
+            parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table_name);
         Migration {
             sql: sql.to_string(),
             shadow_table_migrate_sql,
@@ -72,12 +76,23 @@ impl Migration {
 
     #[allow(dead_code)]
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self.column_map.as_ref().expect("column_map must be set before backfill");
-        BatchedBackfill { batch_size: 1000 }.backfill(&self.table_name, &self.shadow_table_name, column_map, client)
+        let column_map = self
+            .column_map
+            .as_ref()
+            .expect("column_map must be set before backfill");
+        BatchedBackfill { batch_size: 1000 }.backfill(
+            &self.table_name,
+            &self.shadow_table_name,
+            column_map,
+            client,
+        )
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self.column_map.as_ref().expect("column_map must be set before replay");
+        let column_map = self
+            .column_map
+            .as_ref()
+            .expect("column_map must be set before replay");
         let replay = LogTableReplay {
             log_table_name: self.log_table_name.clone(),
             shadow_table_name: self.shadow_table_name.clone(),
@@ -112,7 +127,10 @@ impl Migration {
         Ok(())
     }
 
-    pub fn get_primary_key_info(client: &mut Client, table: &str) -> anyhow::Result<PrimaryKeyInfo> {
+    pub fn get_primary_key_info(
+        client: &mut Client,
+        table: &str,
+    ) -> anyhow::Result<PrimaryKeyInfo> {
         let (schema, table) = if let Some((schema, table)) = table.split_once('.') {
             (schema, table)
         } else {
@@ -147,7 +165,10 @@ impl Migration {
         Ok(())
     }
 
-    pub fn setup_migration(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>) -> anyhow::Result<()> {
+    pub fn setup_migration(
+        &mut self,
+        pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
+    ) -> anyhow::Result<()> {
         let mut client = pool.get()?;
         self.create_post_migrations_schema(&mut client)?;
         self.drop_shadow_table_if_exists(&mut client)?;
@@ -181,7 +202,11 @@ impl Migration {
             log_table_name: self.log_table_name.clone(),
             shadow_table_name: self.shadow_table_name.clone(),
             table_name: self.table_name.clone(),
-            column_map: self.column_map.as_ref().expect("column_map must be set before replay").clone(),
+            column_map: self
+                .column_map
+                .as_ref()
+                .expect("column_map must be set before replay")
+                .clone(),
             primary_key: self.primary_key.clone(),
         };
         let stop_replay_clone = stop_replay.clone();
@@ -201,16 +226,31 @@ impl Migration {
     ) -> std::thread::JoinHandle<anyhow::Result<()>> {
         let table_name = self.table_name.clone();
         let shadow_table_name = self.shadow_table_name.clone();
-        let column_map = self.column_map.clone().expect("column_map must be set before backfill");
+        let column_map = self
+            .column_map
+            .clone()
+            .expect("column_map must be set before backfill");
         let mut backfill_client = pool.get().expect("Failed to get backfill client");
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
-            backfill.backfill(&table_name, &shadow_table_name, &column_map, &mut backfill_client)
+            backfill.backfill(
+                &table_name,
+                &shadow_table_name,
+                &column_map,
+                &mut backfill_client,
+            )
         })
     }
 
-    pub fn orchestrate(&mut self, pool: &Pool<PostgresConnectionManager<R2d2NoTls>>, execute: bool) -> anyhow::Result<()> {
-        use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+    pub fn orchestrate(
+        &mut self,
+        pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
+        execute: bool,
+    ) -> anyhow::Result<()> {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         let client = pool.get()?;
         // primary_key is already set in struct
         drop(client);
@@ -248,5 +288,7 @@ fn get_table_columns(client: &mut Client, table: &str) -> Vec<String> {
         "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
         &[&schema, &table],
     ).unwrap();
-    rows.iter().map(|row| row.get::<_, String>("column_name")).collect()
+    rows.iter()
+        .map(|row| row.get::<_, String>("column_name"))
+        .collect()
 }

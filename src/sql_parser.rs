@@ -1,10 +1,10 @@
 // src/sql_parser.rs
 
 use crate::Parse;
+use sqlparser::ast::Ident;
 use sqlparser::ast::{ObjectName, VisitMut, VisitorMut, visit_relations};
 use sqlparser::dialect::PostgreSqlDialect;
 use sqlparser::parser::Parser;
-use sqlparser::ast::Ident;
 use std::ops::ControlFlow;
 
 #[derive(Debug)]

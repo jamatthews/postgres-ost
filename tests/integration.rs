@@ -2,9 +2,9 @@
 
 #[cfg(test)]
 mod integration {
+    use postgres_ost::migration::Migration;
     use r2d2::Pool;
     use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
-    use postgres_ost::migration::Migration;
     use uuid::Uuid;
 
     pub struct TestDb {
@@ -18,7 +18,8 @@ mod integration {
             let mut admin_client = postgres::Client::connect(
                 "postgres://post_test@localhost/postgres",
                 postgres::NoTls,
-            ).unwrap();
+            )
+            .unwrap();
             // Terminate all connections to the test DB before dropping
             let terminate_sql = format!(
                 "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '{}' AND pid <> pg_backend_pid()",
@@ -33,10 +34,9 @@ mod integration {
     fn setup_test_db() -> TestDb {
         let dbname = format!("test_db_{}", Uuid::new_v4().simple());
         // Connect to the default 'postgres' database to create the test DB
-        let mut admin_client = postgres::Client::connect(
-            "postgres://post_test@localhost/postgres",
-            postgres::NoTls,
-        ).unwrap();
+        let mut admin_client =
+            postgres::Client::connect("postgres://post_test@localhost/postgres", postgres::NoTls)
+                .unwrap();
         let create_sql = format!("CREATE DATABASE {}", dbname);
         admin_client.simple_query(&create_sql).unwrap();
         // Now connect to the new test DB
@@ -44,12 +44,16 @@ mod integration {
         let manager = PostgresConnectionManager::new(db_url.parse().unwrap(), R2d2NoTls);
         let pool = Pool::builder().max_size(3).build(manager).unwrap();
         let mut client = pool.get().unwrap();
-        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations").unwrap();
-        client.simple_query("CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT)").unwrap();
+        client
+            .simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations")
+            .unwrap();
+        client
+            .simple_query(
+                "CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT)",
+            )
+            .unwrap();
         TestDb { pool, dbname }
     }
-
-
 
     #[test]
     fn test_replay_only_subcommand() {
@@ -59,7 +63,9 @@ mod integration {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
-        client.simple_query("INSERT INTO test_table (assertable) VALUES ('before')").unwrap();
+        client
+            .simple_query("INSERT INTO test_table (assertable) VALUES ('before')")
+            .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_postgres-ost"))
             .arg("replay-only")
             .arg("--uri")
@@ -71,18 +77,25 @@ mod integration {
             .spawn()
             .expect("Failed to start replay-only subcommand");
         thread::sleep(Duration::from_secs(2));
-        client.simple_query("INSERT INTO test_table (assertable) VALUES ('after')").unwrap();
+        client
+            .simple_query("INSERT INTO test_table (assertable) VALUES ('after')")
+            .unwrap();
         thread::sleep(Duration::from_secs(2));
         child.kill().expect("Failed to kill replay-only process");
         let output = child.wait_with_output().expect("Failed to get output");
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
-        let row = client.query_one(
-            "SELECT assertable FROM post_migrations.test_table WHERE assertable = 'after'",
-            &[],
-        ).unwrap();
+        let row = client
+            .query_one(
+                "SELECT assertable FROM post_migrations.test_table WHERE assertable = 'after'",
+                &[],
+            )
+            .unwrap();
         let assertable: String = row.get("assertable");
-        assert_eq!(assertable, "after", "Row should be present in shadow table after replay-only");
+        assert_eq!(
+            assertable, "after",
+            "Row should be present in shadow table after replay-only"
+        );
         eprintln!("stdout: {}\nstderr: {}", stdout, stderr);
     }
 
@@ -108,14 +121,14 @@ mod integration {
         };
         replay.setup(&mut client).unwrap();
 
-
-
         migration.backfill_shadow_table(&mut client).unwrap();
 
         // DML
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
         client.simple_query("UPDATE test_table SET assertable = 'expect_row_updated' WHERE assertable = 'expect_row_to_update'").unwrap();
-        client.simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'").unwrap();
+        client
+            .simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'")
+            .unwrap();
         migration.replay_log(&mut client).unwrap();
 
         // Generic assertion logic (always on 'assertable')
@@ -126,12 +139,27 @@ mod integration {
         match rows {
             Ok(rows) => {
                 let vals: Vec<String> = rows.iter().map(|row| row.get("assertable")).collect();
-                assert!(vals.contains(&"expect_backfilled".to_string()), "Backfilled row should be present");
-                assert!(vals.contains(&"expect_row_inserted".to_string()), "Inserted row should have been replayed");
-                assert!(vals.contains(&"expect_row_updated".to_string()), "Updated row should have been replayed");
-                assert!(!vals.contains(&"expect_row_to_update".to_string()), "Row to update should not be present after update");
-                assert!(!vals.contains(&"expect_row_deleted".to_string()), "Deleted row should not be present after replay");
-            },
+                assert!(
+                    vals.contains(&"expect_backfilled".to_string()),
+                    "Backfilled row should be present"
+                );
+                assert!(
+                    vals.contains(&"expect_row_inserted".to_string()),
+                    "Inserted row should have been replayed"
+                );
+                assert!(
+                    vals.contains(&"expect_row_updated".to_string()),
+                    "Updated row should have been replayed"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_to_update".to_string()),
+                    "Row to update should not be present after update"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_deleted".to_string()),
+                    "Deleted row should not be present after replay"
+                );
+            }
             Err(e) => {
                 panic!("Unexpected error querying assertable: {}", e);
             }
@@ -160,7 +188,10 @@ mod integration {
         let mut client = pool.get().unwrap();
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
         let mut migration = Migration::new(migration_sql, &mut client);
-        println!("shadow_table_migrate_sql: {}", migration.shadow_table_migrate_sql);
+        println!(
+            "shadow_table_migrate_sql: {}",
+            migration.shadow_table_migrate_sql
+        );
         assert_eq!(migration.table_name, "test_table");
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
         // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
@@ -189,7 +220,11 @@ mod integration {
         let migration = postgres_ost::migration::Migration::new(migration_sql, &mut client);
         assert_eq!(migration.table_name, "test_table");
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
-        assert!(migration.shadow_table_migrate_sql.contains("CREATE TABLE post_migrations.test_table"));
+        assert!(
+            migration
+                .shadow_table_migrate_sql
+                .contains("CREATE TABLE post_migrations.test_table")
+        );
     }
 
     #[test]

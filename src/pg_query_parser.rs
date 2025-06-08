@@ -1,7 +1,7 @@
 // src/pg_query_parser.rs
 
 use crate::Parse;
-use pg_query::{deparse, parse, NodeEnum};
+use pg_query::{NodeEnum, deparse, parse};
 
 pub struct PgQueryParser;
 
@@ -9,7 +9,8 @@ impl Parse for PgQueryParser {
     fn extract_tables(&self, sql: &str) -> Vec<String> {
         match pg_query::parse(sql) {
             Ok(result) => {
-                let mut tables: Vec<String> = result.tables.into_iter().map(|(name, _ctx)| name).collect();
+                let mut tables: Vec<String> =
+                    result.tables.into_iter().map(|(name, _ctx)| name).collect();
                 if tables.is_empty() {
                     // Fallback: try to extract table name from protobuf for RENAME COLUMN, etc.
                     use pg_query::NodeEnum;
@@ -40,14 +41,19 @@ impl Parse for PgQueryParser {
         shadow_table_name: &str,
     ) -> String {
         // Split statements by semicolon and rewrite each one
-        let stmts: Vec<&str> = sql.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+        let stmts: Vec<&str> = sql
+            .split(';')
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty())
+            .collect();
         let mut rewritten_stmts = Vec::new();
         // Parse schema and table from shadow_table_name
-        let (shadow_schema, shadow_table) = if let Some((schema, table)) = shadow_table_name.split_once('.') {
-            (Some(schema.to_string()), table.to_string())
-        } else {
-            (None, shadow_table_name.to_string())
-        };
+        let (shadow_schema, shadow_table) =
+            if let Some((schema, table)) = shadow_table_name.split_once('.') {
+                (Some(schema.to_string()), table.to_string())
+            } else {
+                (None, shadow_table_name.to_string())
+            };
         for stmt in stmts {
             let rewritten = match parse(stmt) {
                 Ok(mut result) => {
@@ -72,15 +78,23 @@ impl Parse for PgQueryParser {
                                             let len = list.items.len();
                                             if len > 0 {
                                                 // Find the last String node (should be the table name)
-                                                if let Some(NodeEnum::String(s)) = list.items[len - 1].node.as_mut() {
+                                                if let Some(NodeEnum::String(s)) =
+                                                    list.items[len - 1].node.as_mut()
+                                                {
                                                     if s.sval == table_name {
                                                         s.sval = shadow_table.clone();
                                                         changed = true;
                                                         if let Some(schema) = &shadow_schema {
                                                             // If schema is present, set or insert as the second-to-last String node
                                                             if len > 1 {
-                                                                if let Some(NodeEnum::String(schema_node)) = list.items[len - 2].node.as_mut() {
-                                                                    schema_node.sval = schema.clone();
+                                                                if let Some(NodeEnum::String(
+                                                                    schema_node,
+                                                                )) = list.items[len - 2]
+                                                                    .node
+                                                                    .as_mut()
+                                                                {
+                                                                    schema_node.sval =
+                                                                        schema.clone();
                                                                 }
                                                             } else {
                                                                 // Insert schema node before table node
@@ -120,7 +134,9 @@ impl Parse for PgQueryParser {
                                     }
                                     // Also rewrite PARTITION OF references (inh_relations)
                                     for inh in &mut create_stmt.inh_relations {
-                                        if let Some(NodeEnum::RangeVar(range_var)) = inh.node.as_mut() {
+                                        if let Some(NodeEnum::RangeVar(range_var)) =
+                                            inh.node.as_mut()
+                                        {
                                             if range_var.relname == table_name {
                                                 range_var.relname = shadow_table.clone();
                                                 if let Some(schema) = &shadow_schema {
@@ -231,7 +247,8 @@ mod tests {
     fn test_migrate_shadow_table_statement() {
         let sql = "ALTER TABLE test_table ADD COLUMN id bigint";
         let parser = PgQueryParser;
-        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        let rewritten =
+            parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         assert_eq!(
             rewritten,
             "ALTER TABLE post_migrations.test_table ADD COLUMN id bigint"
@@ -240,10 +257,15 @@ mod tests {
 
     #[test]
     fn test_migrate_shadow_table_statement_drop_and_create_partitioned() {
-        let sql = "DROP TABLE test_table; CREATE TABLE test_table (id bigint) PARTITION BY RANGE (id)";
+        let sql =
+            "DROP TABLE test_table; CREATE TABLE test_table (id bigint) PARTITION BY RANGE (id)";
         let parser = PgQueryParser;
-        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
-        assert_eq!(rewritten, "DROP TABLE post_migrations.test_table; CREATE TABLE post_migrations.test_table (id bigint) PARTITION BY RANGE(id)");
+        let rewritten =
+            parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        assert_eq!(
+            rewritten,
+            "DROP TABLE post_migrations.test_table; CREATE TABLE post_migrations.test_table (id bigint) PARTITION BY RANGE(id)"
+        );
     }
 
     #[test]
@@ -270,12 +292,19 @@ mod tests {
             CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
         let parser = PgQueryParser;
-        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        let rewritten =
+            parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         let expected = "DROP TABLE post_migrations.test_table; \
             CREATE TABLE post_migrations.test_table (id bigserial PRIMARY KEY, assertable text, target text) PARTITION BY HASH(id); \
             CREATE TABLE test_table_p0 PARTITION OF post_migrations.test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
             CREATE TABLE test_table_p1 PARTITION OF post_migrations.test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1)";
-        let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
+        let norm_lines = |s: &str| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect::<Vec<String>>()
+        };
         assert_eq!(norm_lines(&rewritten), norm_lines(expected));
     }
 
@@ -283,9 +312,16 @@ mod tests {
     fn test_migrate_shadow_table_statement_with_non_public_schema() {
         let sql = "ALTER TABLE my_schema.test_table ADD COLUMN foo TEXT; DROP TABLE my_schema.test_table;";
         let parser = PgQueryParser;
-        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        let rewritten =
+            parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         let expected = "ALTER TABLE post_migrations.test_table ADD COLUMN foo text; DROP TABLE post_migrations.test_table";
-        let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
+        let norm_lines = |s: &str| {
+            s.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty())
+                .map(|l| l.to_string())
+                .collect::<Vec<String>>()
+        };
         assert_eq!(norm_lines(&rewritten), norm_lines(expected));
     }
 }

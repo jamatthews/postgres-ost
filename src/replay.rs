@@ -1,10 +1,10 @@
 // replay.rs
 // Defines the Replay trait and LogTableReplay struct for log replay functionality.
 
-use postgres::Client;
-use anyhow::Result;
-use postgres::types::Type;
 use crate::{ColumnMap, PrimaryKeyInfo};
+use anyhow::Result;
+use postgres::Client;
+use postgres::types::Type;
 
 pub trait Replay {
     fn replay_log(&self, client: &mut Client) -> Result<()>;
@@ -33,7 +33,11 @@ impl Replay for LogTableReplay {
 
 impl LogTableReplay {
     /// Fetches and deletes a batch of N rows from the log table, ordered by post_migration_log_id, returning the deleted rows.
-    pub fn fetch_batch(&self, client: &mut postgres::Transaction, batch_size: usize) -> Result<Vec<postgres::Row>> {
+    pub fn fetch_batch(
+        &self,
+        client: &mut postgres::Transaction,
+        batch_size: usize,
+    ) -> Result<Vec<postgres::Row>> {
         let query = format!(
             "DELETE FROM {} WHERE post_migration_log_id IN (
                 SELECT post_migration_log_id FROM {} ORDER BY post_migration_log_id ASC LIMIT $1
@@ -59,7 +63,10 @@ impl LogTableReplay {
             let pk_val = PrimaryKey::from_row(row, pk_col, pk_type);
             let pk_sql = pk_val.to_sql();
             if operation == "DELETE" {
-                let stmt = format!("DELETE FROM {} WHERE {} = {}", self.shadow_table_name, pk_col, pk_sql);
+                let stmt = format!(
+                    "DELETE FROM {} WHERE {} = {}",
+                    self.shadow_table_name, pk_col, pk_sql
+                );
                 statements.push(stmt);
             } else if operation == "INSERT" {
                 let stmt = format!(
@@ -73,9 +80,17 @@ impl LogTableReplay {
                 );
                 statements.push(stmt);
             } else if operation == "UPDATE" {
-                let set_clause = shadow_cols.iter().zip(main_cols.iter())
-                    .map(|(shadow_col, main_col)| format!("{} = (SELECT {} FROM {} WHERE {} = {})", shadow_col, main_col, self.table_name, pk_col, pk_sql))
-                    .collect::<Vec<_>>().join(", ");
+                let set_clause = shadow_cols
+                    .iter()
+                    .zip(main_cols.iter())
+                    .map(|(shadow_col, main_col)| {
+                        format!(
+                            "{} = (SELECT {} FROM {} WHERE {} = {})",
+                            shadow_col, main_col, self.table_name, pk_col, pk_sql
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
                 let stmt = format!(
                     "UPDATE {shadow} SET {set_clause} WHERE {pk_col} = {pk_val}",
                     shadow = self.shadow_table_name,
