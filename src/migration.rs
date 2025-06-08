@@ -19,9 +19,8 @@ pub struct Migration {
     pub shadow_table_migrate_sql: String,
     pub table: Table,
     pub shadow_table: Table,
-    pub log_table_name: String,
+    pub log_table: Table,
     pub old_table: Table,
-    pub column_map: Option<ColumnMap>,
     pub primary_key: PrimaryKeyInfo,
 }
 
@@ -33,9 +32,11 @@ impl Migration {
             .expect("Failed to extract main table");
         let table = Table::new(&table_name);
         let shadow_table = Table::new(&format!("post_migrations.{}", table_name));
-        let log_table_name = format!("post_migrations.{}_log", table_name);
+        let log_table = Table::new(&format!("post_migrations.{}_log", table_name));
         let old_table = Table::new(&format!("post_migrations.{}_old", table_name));
-        let primary_key = table.get_primary_key_info(client).expect("Failed to detect primary key");
+        let primary_key = table
+            .get_primary_key_info(client)
+            .expect("Failed to detect primary key");
         let shadow_table_migrate_sql =
             parser.migrate_shadow_table_statement(sql, &table_name, &shadow_table.to_string());
         Migration {
@@ -43,16 +44,14 @@ impl Migration {
             shadow_table_migrate_sql,
             table,
             shadow_table,
-            log_table_name: log_table_name.clone(),
+            log_table,
             old_table,
-            column_map: None,
             primary_key,
         }
     }
 
     pub fn drop_shadow_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let drop_shadow_table_statement =
-            format!("DROP TABLE IF EXISTS {}", self.shadow_table.to_string());
+        let drop_shadow_table_statement = format!("DROP TABLE IF EXISTS {}", self.shadow_table);
         client.simple_query(&drop_shadow_table_statement)?;
         Ok(())
     }
@@ -60,7 +59,7 @@ impl Migration {
     pub fn create_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let create_table_statement = format!(
             "CREATE TABLE {} (LIKE {} INCLUDING ALL)",
-            self.shadow_table.to_string(), self.table.to_string()
+            self.shadow_table, self.table
         );
         client.simple_query(&create_table_statement)?;
         Ok(())
@@ -76,30 +75,30 @@ impl Migration {
         Ok(())
     }
 
+    pub fn create_column_map(&self, client: &mut Client) -> ColumnMap {
+        let main_cols = self.table.get_columns(client);
+        let shadow_cols = self.shadow_table.get_columns(client);
+        ColumnMap::new(&main_cols, &shadow_cols)
+    }
+
     #[allow(dead_code)]
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self
-            .column_map
-            .as_ref()
-            .expect("column_map must be set before backfill");
+        let column_map = self.create_column_map(client);
         BatchedBackfill { batch_size: 1000 }.backfill(
             &self.table.to_string(),
             &self.shadow_table.to_string(),
-            column_map,
+            &column_map,
             client,
         )
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self
-            .column_map
-            .as_ref()
-            .expect("column_map must be set before replay");
+        let column_map = self.create_column_map(client);
         let replay = LogTableReplay {
-            log_table_name: self.log_table_name.clone(),
+            log_table_name: self.log_table.to_string(),
             shadow_table_name: self.shadow_table.to_string(),
             table_name: self.table.to_string(),
-            column_map: column_map.clone(),
+            column_map,
             primary_key: self.primary_key.clone(),
         };
         replay.replay_log(client)?;
@@ -107,7 +106,7 @@ impl Migration {
     }
 
     pub fn drop_old_table_if_exists(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table.to_string());
+        let drop_old_table_statement = format!("DROP TABLE IF EXISTS {}", self.old_table);
         client.simple_query(&drop_old_table_statement)?;
         Ok(())
     }
@@ -115,32 +114,14 @@ impl Migration {
     pub fn swap_tables(&self, client: &mut Client) -> Result<(), anyhow::Error> {
         let swap_statement = format!(
             "BEGIN; ALTER TABLE {} RENAME TO {}; ALTER TABLE {} RENAME TO {}; COMMIT;",
-            self.table.to_string(), self.old_table.to_string(), self.shadow_table.to_string(), self.table.to_string()
+            self.table, self.old_table, self.shadow_table, self.table
         );
         client.simple_query(&swap_statement)?;
         Ok(())
     }
 
-    pub fn create_column_map(&mut self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let main_cols = self.table.get_columns(client);
-        let shadow_cols = self.shadow_table.get_columns(client);
-        let map = ColumnMap::new(&main_cols, &shadow_cols);
-        self.column_map = Some(map);
-        Ok(())
-    }
-
-    pub fn create_triggers(&self, _client: &mut Client) -> Result<(), anyhow::Error> {
-        // Deprecated: use LogTableReplay::setup instead
-        Ok(())
-    }
-
-    fn create_post_migrations_schema(&self, client: &mut Client) -> anyhow::Result<()> {
-        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations;")?;
-        Ok(())
-    }
-
     pub fn setup_migration(
-        &mut self,
+        &self,
         pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
     ) -> anyhow::Result<()> {
         let mut client = pool.get()?;
@@ -148,18 +129,16 @@ impl Migration {
         self.drop_shadow_table_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
-        self.create_column_map(&mut client)?;
+        let column_map = self.create_column_map(&mut client);
         // Use LogTableReplay for log table and trigger setup
-        if let Some(ref column_map) = self.column_map {
-            let replay = LogTableReplay {
-                log_table_name: self.log_table_name.clone(),
-                shadow_table_name: self.shadow_table.to_string(),
-                table_name: self.table.to_string(),
-                column_map: column_map.clone(),
-                primary_key: self.primary_key.clone(),
-            };
-            replay.setup(&mut client)?;
-        }
+        let replay = LogTableReplay {
+            log_table_name: self.log_table.to_string(),
+            shadow_table_name: self.shadow_table.to_string(),
+            table_name: self.table.to_string(),
+            column_map,
+            primary_key: self.primary_key.clone(),
+        };
+        replay.setup(&mut client)?;
         Ok(())
     }
 
@@ -172,15 +151,12 @@ impl Migration {
         use std::thread;
         use std::time::Duration;
         let mut replay_client = pool.get().expect("Failed to get replay client");
+        let column_map = self.create_column_map(&mut replay_client);
         let replay = LogTableReplay {
-            log_table_name: self.log_table_name.clone(),
+            log_table_name: self.log_table.to_string(),
             shadow_table_name: self.shadow_table.to_string(),
             table_name: self.table.to_string(),
-            column_map: self
-                .column_map
-                .as_ref()
-                .expect("column_map must be set before replay")
-                .clone(),
+            column_map,
             primary_key: self.primary_key.clone(),
         };
         let stop_replay_clone = stop_replay.clone();
@@ -198,11 +174,8 @@ impl Migration {
     ) -> std::thread::JoinHandle<anyhow::Result<()>> {
         let table = self.table.clone();
         let shadow_table = self.shadow_table.clone();
-        let column_map = self
-            .column_map
-            .clone()
-            .expect("column_map must be set before backfill");
         let mut backfill_client = pool.get().expect("Failed to get backfill client");
+        let column_map = self.create_column_map(&mut backfill_client);
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
             backfill.backfill(
@@ -215,7 +188,7 @@ impl Migration {
     }
 
     pub fn orchestrate(
-        &mut self,
+        &self,
         pool: &Pool<PostgresConnectionManager<R2d2NoTls>>,
         execute: bool,
     ) -> anyhow::Result<()> {
@@ -224,7 +197,6 @@ impl Migration {
             atomic::{AtomicBool, Ordering},
         };
         let client = pool.get()?;
-        // primary_key is already set in struct
         drop(client);
         self.setup_migration(pool)?;
         let stop_replay = Arc::new(AtomicBool::new(false));
@@ -233,16 +205,19 @@ impl Migration {
         backfill_handle.join().expect("Backfill thread panicked")?;
         stop_replay.store(true, Ordering::Relaxed);
         replay_handle.join().expect("Replay thread panicked");
-        // Ensure all log entries are replayed one last time
         let mut client = pool.get()?;
         self.replay_log(&mut client)?;
         if execute {
-            // TODO: need to lock table against writes, finish replay, then swap tables
             self.swap_tables(&mut client)?;
             self.drop_old_table_if_exists(&mut client)?;
         } else {
             self.drop_shadow_table_if_exists(&mut client)?;
         }
+        Ok(())
+    }
+
+    fn create_post_migrations_schema(&self, client: &mut Client) -> anyhow::Result<()> {
+        client.simple_query("CREATE SCHEMA IF NOT EXISTS post_migrations;")?;
         Ok(())
     }
 }
@@ -257,9 +232,15 @@ impl FromStr for Table {
     type Err = ();
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         if let Some((schema, name)) = s.split_once('.') {
-            Ok(Table { schema: Some(schema.to_string()), name: name.to_string() })
+            Ok(Table {
+                schema: Some(schema.to_string()),
+                name: name.to_string(),
+            })
         } else {
-            Ok(Table { schema: None, name: s.to_string() })
+            Ok(Table {
+                schema: None,
+                name: s.to_string(),
+            })
         }
     }
 }
@@ -301,7 +282,7 @@ impl Table {
     pub fn get_columns(&self, client: &mut Client) -> Vec<String> {
         let rows = client.query(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = $1 AND table_name = $2 ORDER BY ordinal_position",
-            &[&self.schema.as_ref().map(String::as_str).unwrap_or("public"), &self.name],
+            &[&self.schema.as_deref().unwrap_or("public"), &self.name],
         ).unwrap();
         rows.iter()
             .map(|row| row.get::<_, String>("column_name"))

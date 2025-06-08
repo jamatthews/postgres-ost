@@ -106,15 +106,15 @@ mod integration {
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
 
-        let mut migration = Migration::new(alter_table_sql, &mut client);
+        let migration = Migration::new(alter_table_sql, &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
-        migration.create_column_map(&mut client).unwrap();
+        let column_map = migration.create_column_map(&mut client);
         let replay = postgres_ost::replay::LogTableReplay {
-            log_table_name: migration.log_table_name.clone(),
+            log_table_name: migration.log_table.to_string(),
             shadow_table_name: migration.shadow_table.to_string(),
             table_name: migration.table.to_string(),
-            column_map: migration.column_map.as_ref().unwrap().clone(),
+            column_map: column_map.clone(),
             primary_key: migration.primary_key.clone(),
         };
         replay.setup(&mut client).unwrap();
@@ -185,9 +185,12 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
-        let mut migration = Migration::new(migration_sql, &mut client);
+        let migration = Migration::new(migration_sql, &mut client);
         assert_eq!(migration.table.to_string(), "test_table");
-        assert_eq!(migration.shadow_table.to_string(), "post_migrations.test_table");
+        assert_eq!(
+            migration.shadow_table.to_string(),
+            "post_migrations.test_table"
+        );
         // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
         migration.setup_migration(pool).unwrap();
         // Now check if the shadow table has the new column
@@ -213,7 +216,10 @@ mod integration {
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
         let migration = postgres_ost::migration::Migration::new(migration_sql, &mut client);
         assert_eq!(migration.table.to_string(), "test_table");
-        assert_eq!(migration.shadow_table.to_string(), "post_migrations.test_table");
+        assert_eq!(
+            migration.shadow_table.to_string(),
+            "post_migrations.test_table"
+        );
         assert!(
             migration
                 .shadow_table_migrate_sql

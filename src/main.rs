@@ -22,7 +22,7 @@ fn main() -> Result<()> {
             let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
-            let mut migration = Migration::new(&sql, &mut client);
+            let migration = Migration::new(&sql, &mut client);
             migration.orchestrate(&pool, execute)?;
         }
         Command::ReplayOnly {

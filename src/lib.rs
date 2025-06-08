@@ -28,7 +28,7 @@ pub fn run_replay_only(
     stop_replay: Arc<AtomicBool>,
 ) -> Result<()> {
     let mut client = pool.get()?;
-    let mut migration = crate::migration::Migration::new(sql, &mut client);
+    let migration = crate::migration::Migration::new(sql, &mut client);
     migration.setup_migration(pool)?;
     let replay_handle = migration.start_log_replay_thread(pool, stop_replay.clone());
     replay_handle.join().expect("Replay thread panicked");
