@@ -1,10 +1,15 @@
+use crate::table::Table;
+use postgres::Client;
+
 /// Maps columns from the main table to the shadow table, handling renames and drops.
 #[derive(Clone)]
 pub struct ColumnMap(Vec<(String, Option<String>)>);
 
 impl ColumnMap {
-    /// Constructs a new `ColumnMap` from the main and shadow table columns.
-    pub fn new(main_cols: &[String], shadow_cols: &[String]) -> Self {
+    /// Constructs a new `ColumnMap` from the main and shadow Table objects, fetching columns from the database.
+    pub fn new(main: &Table, shadow: &Table, client: &mut Client) -> Self {
+        let main_cols = main.get_columns(client);
+        let shadow_cols = shadow.get_columns(client);
         let mut map = Vec::new();
         let unmatched_main: Vec<String> = main_cols
             .iter()
@@ -16,7 +21,7 @@ impl ColumnMap {
             .filter(|c| !main_cols.contains(c))
             .cloned()
             .collect();
-        for main_col in main_cols {
+        for main_col in &main_cols {
             if let Some(shadow_col) = shadow_cols.iter().find(|c| *c == main_col) {
                 map.push((main_col.clone(), Some(shadow_col.clone())));
             } else if unmatched_main.len() == 1

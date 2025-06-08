@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod integration {
+    use postgres_ost::ColumnMap;
     use postgres_ost::migration::Migration;
     use r2d2::Pool;
     use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
@@ -109,7 +110,7 @@ mod integration {
         let migration = Migration::new(alter_table_sql, &mut client);
         migration.create_shadow_table(&mut client).unwrap();
         migration.migrate_shadow_table(&mut client).unwrap();
-        let column_map = migration.create_column_map(&mut client);
+        let column_map = ColumnMap::new(&migration.table, &migration.shadow_table, &mut client);
         let replay = postgres_ost::replay::LogTableReplay {
             log_table: migration.log_table.clone(),
             shadow_table: migration.shadow_table.clone(),

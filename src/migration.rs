@@ -1,11 +1,13 @@
 use crate::backfill::Backfill;
 use crate::table::Table;
-use crate::{BatchedBackfill, ColumnMap, LogTableReplay, Parse, Replay};
+use crate::{BatchedBackfill, LogTableReplay, Parse, Replay};
 use anyhow::Result;
 use postgres::Client;
 use postgres::types::Type;
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
+
+use crate::ColumnMap;
 
 #[derive(Clone)]
 pub struct PrimaryKeyInfo {
@@ -63,15 +65,9 @@ impl Migration {
         Ok(())
     }
 
-    pub fn create_column_map(&self, client: &mut Client) -> ColumnMap {
-        let main_cols = self.table.get_columns(client);
-        let shadow_cols = self.shadow_table.get_columns(client);
-        ColumnMap::new(&main_cols, &shadow_cols)
-    }
-
     #[allow(dead_code)]
     pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self.create_column_map(client);
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
         BatchedBackfill { batch_size: 1000 }.backfill(
             &self.table,
             &self.shadow_table,
@@ -81,7 +77,7 @@ impl Migration {
     }
 
     pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = self.create_column_map(client);
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
         let replay = LogTableReplay {
             log_table: self.log_table.clone(),
             shadow_table: self.shadow_table.clone(),
@@ -102,7 +98,7 @@ impl Migration {
         self.shadow_table.drop_if_exists(&mut client)?;
         self.create_shadow_table(&mut client)?;
         self.migrate_shadow_table(&mut client)?;
-        let column_map = self.create_column_map(&mut client);
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, &mut client);
         let replay = LogTableReplay {
             log_table: self.log_table.clone(),
             shadow_table: self.shadow_table.clone(),
@@ -123,7 +119,7 @@ impl Migration {
         use std::thread;
         use std::time::Duration;
         let mut replay_client = pool.get().expect("Failed to get replay client");
-        let column_map = self.create_column_map(&mut replay_client);
+        let column_map = ColumnMap::new(&self.table, &self.shadow_table, &mut replay_client);
         let replay = LogTableReplay {
             log_table: self.log_table.clone(),
             shadow_table: self.shadow_table.clone(),
@@ -147,7 +143,7 @@ impl Migration {
         let table = self.table.clone();
         let shadow_table = self.shadow_table.clone();
         let mut backfill_client = pool.get().expect("Failed to get backfill client");
-        let column_map = self.create_column_map(&mut backfill_client);
+        let column_map = ColumnMap::new(&table, &shadow_table, &mut backfill_client);
         let backfill = BatchedBackfill { batch_size: 1000 };
         std::thread::spawn(move || {
             backfill.backfill(&table, &shadow_table, &column_map, &mut backfill_client)
