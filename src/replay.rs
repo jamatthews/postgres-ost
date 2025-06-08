@@ -1,7 +1,7 @@
 // replay.rs
 // Defines the Replay trait and LogTableReplay struct for log replay functionality.
 
-use crate::{ColumnMap, PrimaryKeyInfo};
+use crate::{ColumnMap, PrimaryKeyInfo, table::Table};
 use anyhow::Result;
 use postgres::Client;
 use postgres::types::Type;
@@ -11,9 +11,9 @@ pub trait Replay {
 }
 
 pub struct LogTableReplay {
-    pub log_table_name: String,
-    pub shadow_table_name: String,
-    pub table_name: String,
+    pub log_table: Table,
+    pub shadow_table: Table,
+    pub table: Table,
     pub column_map: ColumnMap,
     pub primary_key: PrimaryKeyInfo,
 }
@@ -39,10 +39,10 @@ impl LogTableReplay {
         batch_size: usize,
     ) -> Result<Vec<postgres::Row>> {
         let query = format!(
-            "DELETE FROM {} WHERE post_migration_log_id IN (
-                SELECT post_migration_log_id FROM {} ORDER BY post_migration_log_id ASC LIMIT $1
+            "DELETE FROM {} WHERE post_migration_log_id IN (\
+                SELECT post_migration_log_id FROM {} ORDER BY post_migration_log_id ASC LIMIT $1\
             ) RETURNING *",
-            self.log_table_name, self.log_table_name
+            self.log_table, self.log_table
         );
         let rows = client.query(&query, &[&(batch_size as i64)])?;
         Ok(rows)
@@ -65,14 +65,14 @@ impl LogTableReplay {
             if operation == "DELETE" {
                 let stmt = format!(
                     "DELETE FROM {} WHERE {} = {}",
-                    self.shadow_table_name, pk_col, pk_sql
+                    self.shadow_table, pk_col, pk_sql
                 );
                 statements.push(stmt);
             } else if operation == "INSERT" {
                 let stmt = format!(
                     "INSERT INTO {shadow} ({cols}) SELECT {selectCols} FROM {main} WHERE {pk_col} = {pk_val}",
-                    shadow = self.shadow_table_name,
-                    main = self.table_name,
+                    shadow = self.shadow_table,
+                    main = self.table,
                     cols = insert_cols_csv,
                     selectCols = select_cols_csv,
                     pk_col = pk_col,
@@ -86,14 +86,14 @@ impl LogTableReplay {
                     .map(|(shadow_col, main_col)| {
                         format!(
                             "{} = (SELECT {} FROM {} WHERE {} = {})",
-                            shadow_col, main_col, self.table_name, pk_col, pk_sql
+                            shadow_col, main_col, self.table, pk_col, pk_sql
                         )
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
                 let stmt = format!(
                     "UPDATE {shadow} SET {set_clause} WHERE {pk_col} = {pk_val}",
-                    shadow = self.shadow_table_name,
+                    shadow = self.shadow_table,
                     set_clause = set_clause,
                     pk_col = pk_col,
                     pk_val = pk_sql
@@ -109,7 +109,7 @@ impl LogTableReplay {
         // Create log table
         let create_log_statement = format!(
             "CREATE TABLE IF NOT EXISTS {} (post_migration_log_id BIGSERIAL PRIMARY KEY, operation TEXT, timestamp TIMESTAMPTZ DEFAULT NOW(), LIKE {})",
-            self.log_table_name, self.table_name
+            self.log_table, self.table
         );
         client.simple_query(&create_log_statement)?;
 
@@ -129,8 +129,8 @@ impl LogTableReplay {
                 AFTER INSERT ON {table}
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_insert_trigger_fn();
             "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
+            log_table = self.log_table,
+            table = self.table,
             pk_col = pk_col
         );
         client.batch_execute(&insert_trigger)?;
@@ -150,8 +150,8 @@ impl LogTableReplay {
                 AFTER DELETE ON {table}
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_delete_trigger_fn();
             "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
+            log_table = self.log_table,
+            table = self.table,
             pk_col = pk_col
         );
         client.batch_execute(&delete_trigger)?;
@@ -171,8 +171,8 @@ impl LogTableReplay {
                 AFTER UPDATE ON {table}
                 FOR EACH ROW EXECUTE FUNCTION {log_table}_update_trigger_fn();
             "#,
-            log_table = self.log_table_name,
-            table = self.table_name,
+            log_table = self.log_table,
+            table = self.table,
             pk_col = pk_col
         );
         client.batch_execute(&update_trigger)?;

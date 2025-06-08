@@ -7,9 +7,11 @@ pub mod migration;
 pub mod parse;
 pub mod pg_query_parser;
 pub mod replay;
+pub mod table;
 
 // Re-export key types for ergonomic access
 
+pub use self::table::*;
 pub use backfill::*;
 pub use column_map::*;
 pub use migration::*;

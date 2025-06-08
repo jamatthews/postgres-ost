@@ -1,8 +1,10 @@
+use crate::table::Table;
+
 pub trait Backfill {
     fn backfill(
         &self,
-        table_name: &str,
-        shadow_table_name: &str,
+        table: &Table,
+        shadow_table: &Table,
         column_map: &crate::ColumnMap,
         client: &mut postgres::Client,
     ) -> anyhow::Result<()>;
@@ -13,8 +15,8 @@ pub struct SimpleBackfill;
 impl Backfill for SimpleBackfill {
     fn backfill(
         &self,
-        table_name: &str,
-        shadow_table_name: &str,
+        table: &Table,
+        shadow_table: &Table,
         column_map: &crate::ColumnMap,
         client: &mut postgres::Client,
     ) -> anyhow::Result<()> {
@@ -24,7 +26,7 @@ impl Backfill for SimpleBackfill {
         let select_cols_csv = main_cols.join(", ");
         let backfill_statement = format!(
             "INSERT INTO {} ({}) SELECT {} FROM {}",
-            shadow_table_name, insert_cols_csv, select_cols_csv, table_name
+            shadow_table, insert_cols_csv, select_cols_csv, table
         );
         client.simple_query(&backfill_statement)?;
         Ok(())
@@ -38,8 +40,8 @@ pub struct BatchedBackfill {
 impl Backfill for BatchedBackfill {
     fn backfill(
         &self,
-        table_name: &str,
-        shadow_table_name: &str,
+        table: &Table,
+        shadow_table: &Table,
         column_map: &crate::ColumnMap,
         client: &mut postgres::Client,
     ) -> anyhow::Result<()> {
@@ -53,13 +55,13 @@ impl Backfill for BatchedBackfill {
             let rows = if let Some(last_id) = last_seen_id {
                 let backfill_statement = format!(
                     "INSERT INTO {} ({}) SELECT {} FROM {} WHERE id > $1 ORDER BY id ASC LIMIT {} RETURNING id",
-                    shadow_table_name, insert_cols_csv, select_cols_csv, table_name, batch_size
+                    shadow_table, insert_cols_csv, select_cols_csv, table, batch_size
                 );
                 client.query(&backfill_statement, &[&last_id])?
             } else {
                 let backfill_statement = format!(
                     "INSERT INTO {} ({}) SELECT {} FROM {} ORDER BY id ASC LIMIT {} RETURNING id",
-                    shadow_table_name, insert_cols_csv, select_cols_csv, table_name, batch_size
+                    shadow_table, insert_cols_csv, select_cols_csv, table, batch_size
                 );
                 client.query(&backfill_statement, &[])?
             };
