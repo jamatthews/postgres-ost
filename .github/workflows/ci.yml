@@ -36,7 +36,7 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --all-features -- -D warnings
       - name: Set POSTGRES_OST_TEST_DB_URL for tests
-        run: echo "POSTGRES_OST_TEST_DB_URL=postgres://post_test:postgres@localhost/post_test" >> $GITHUB_ENV
+        run: echo "POSTGRES_OST_TEST_DB_URL=postgres://post_test:postgres@localhost/postgres" >> $GITHUB_ENV
       - name: Run tests
         env:
           PGUSER: post_test
