@@ -212,9 +212,7 @@ impl Migration {
         let stop_replay_clone = stop_replay.clone();
         thread::spawn(move || {
             while !stop_replay_clone.load(Ordering::Relaxed) {
-                if let Err(e) = replay.replay_log(&mut replay_client) {
-                    eprintln!("replay_log error: {e}");
-                }
+                let _ = replay.replay_log(&mut replay_client).is_err();
                 thread::sleep(Duration::from_millis(200));
             }
         })

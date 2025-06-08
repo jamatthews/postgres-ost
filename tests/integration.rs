@@ -54,7 +54,10 @@ mod integration {
 
     #[test]
     fn test_replay_only_subcommand() {
-        use std::process::{Command, Stdio};
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
         use std::thread;
         use std::time::Duration;
         let test_db = setup_test_db();
@@ -63,25 +66,24 @@ mod integration {
         client
             .simple_query("INSERT INTO test_table (assertable) VALUES ('before')")
             .unwrap();
-        let mut child = Command::new(env!("CARGO_BIN_EXE_postgres-ost"))
-            .arg("replay-only")
-            .arg("--uri")
-            .arg(format!("postgres://post_test@localhost/{}", test_db.dbname))
-            .arg("--sql")
-            .arg("ALTER TABLE test_table ADD COLUMN bar TEXT")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("Failed to start replay-only subcommand");
+        let stop_replay = Arc::new(AtomicBool::new(false));
+        let pool2 = pool.clone();
+        let stop_replay2 = stop_replay.clone();
+        let replay_thread = thread::spawn(move || {
+            postgres_ost::run_replay_only(
+                &pool2,
+                "ALTER TABLE test_table ADD COLUMN bar TEXT",
+                stop_replay2,
+            )
+            .unwrap();
+        });
         thread::sleep(Duration::from_secs(2));
         client
             .simple_query("INSERT INTO test_table (assertable) VALUES ('after')")
             .unwrap();
         thread::sleep(Duration::from_secs(2));
-        child.kill().expect("Failed to kill replay-only process");
-        let output = child.wait_with_output().expect("Failed to get output");
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        stop_replay.store(true, Ordering::Relaxed);
+        replay_thread.join().expect("Replay thread panicked");
         let row = client
             .query_one(
                 "SELECT assertable FROM post_migrations.test_table WHERE assertable = 'after'",
@@ -93,7 +95,6 @@ mod integration {
             assertable, "after",
             "Row should be present in shadow table after replay-only"
         );
-        eprintln!("stdout: {}\nstderr: {}", stdout, stderr);
     }
 
     // Helper to run the concurrent DML/backfill/replay test for any ALTER TABLE statement, always using 'assertable' as the expected column
@@ -185,10 +186,6 @@ mod integration {
         let mut client = pool.get().unwrap();
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
         let mut migration = Migration::new(migration_sql, &mut client);
-        println!(
-            "shadow_table_migrate_sql: {}",
-            migration.shadow_table_migrate_sql
-        );
         assert_eq!(migration.table_name, "test_table");
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
         // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
