@@ -75,7 +75,7 @@ impl Backfill for BatchedBackfill {
             if rows.is_empty() {
                 break;
             }
-            last_seen_id = rows.last().map(|row| row.get::<_, i64>(0).clone());
+            last_seen_id = rows.last().map(|row| row.get::<_, i64>(0));
         }
         Ok(())
     }

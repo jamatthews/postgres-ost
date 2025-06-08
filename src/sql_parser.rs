@@ -45,7 +45,7 @@ impl Parse for SqlParser {
         table_name: &str,
         shadow_table_name: &str,
     ) -> String {
-        let ast = Parser::parse_sql(&PostgreSqlDialect {}, &sql).unwrap();
+        let ast = Parser::parse_sql(&PostgreSqlDialect {}, sql).unwrap();
         let mut rewriter = TableNameRewriter {
             rename_table_from: table_name.to_string(),
             rename_table_to: shadow_table_name.to_string(),
@@ -73,7 +73,7 @@ mod tests {
         let sql = "ALTER TABLE test_table ADD COLUMN bigint id";
         let parser = SqlParser;
         let rewritten =
-            parser.migrate_shadow_table_statement(&sql, "test_table", "post_migrations.test_table");
+            parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         assert_eq!(
             rewritten,
             "ALTER TABLE post_migrations.test_table ADD COLUMN bigint id"

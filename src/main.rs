@@ -1,7 +1,6 @@
 //! Main binary entry point for postgres-ost.
 
 use anyhow::Result;
-use ctrlc;
 use postgres_ost::Migration;
 use postgres_ost::args::{Command, get_args};
 use r2d2::Pool;

@@ -195,7 +195,7 @@ mod integration {
         assert_eq!(migration.table_name, "test_table");
         assert_eq!(migration.shadow_table_name, "post_migrations.test_table");
         // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
-        migration.setup_migration(&pool).unwrap();
+        migration.setup_migration(pool).unwrap();
         // Now check if the shadow table has the new column
         let row = client.query_one(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = 'post_migrations' AND table_name = 'test_table' AND column_name = 'foo'",
