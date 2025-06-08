@@ -86,6 +86,15 @@ impl Parse for PgQueryParser {
                                             changed = true;
                                         }
                                     }
+                                    // Also rewrite PARTITION OF references (inh_relations)
+                                    for inh in &mut create_stmt.inh_relations {
+                                        if let Some(NodeEnum::RangeVar(range_var)) = inh.node.as_mut() {
+                                            if range_var.relname == table_name {
+                                                range_var.relname = shadow_table_name.to_string();
+                                                changed = true;
+                                            }
+                                        }
+                                    }
                                 }
                                 _ => {}
                             }
@@ -102,6 +111,56 @@ impl Parse for PgQueryParser {
             rewritten_stmts.push(rewritten.trim().to_string());
         }
         rewritten_stmts.join("; ")
+    }
+}
+
+impl PgQueryParser {
+    /// Extracts the main table name from a SQL statement (first table in DDL)
+    pub fn extract_main_table(&self, sql: &str) -> Option<String> {
+        for stmt_sql in sql.split(';').map(|s| s.trim()).filter(|s| !s.is_empty()) {
+            if let Ok(result) = pg_query::parse(stmt_sql) {
+                // Try to get the first table from the parsed tables list
+                if let Some((name, _)) = result.tables.into_iter().next() {
+                    return Some(name);
+                }
+                // Fallback: look for first DDL table in protobuf
+                if let Some(stmt) = result.protobuf.stmts.first() {
+                    if let Some(node) = stmt.stmt.as_ref().map(|s| &s.node) {
+                        use pg_query::NodeEnum;
+                        match node {
+                            Some(NodeEnum::AlterTableStmt(alter_table)) => {
+                                if let Some(relation) = &alter_table.relation {
+                                    return Some(relation.relname.clone());
+                                }
+                            }
+                            Some(NodeEnum::DropStmt(drop_stmt)) => {
+                                for obj in &drop_stmt.objects {
+                                    if let Some(NodeEnum::List(list)) = obj.node.as_ref() {
+                                        for item in &list.items {
+                                            if let Some(NodeEnum::String(s)) = item.node.as_ref() {
+                                                return Some(s.sval.clone());
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            Some(NodeEnum::RenameStmt(rename_stmt)) => {
+                                if let Some(relation) = &rename_stmt.relation {
+                                    return Some(relation.relname.clone());
+                                }
+                            }
+                            Some(NodeEnum::CreateStmt(create_stmt)) => {
+                                if let Some(relation) = &create_stmt.relation {
+                                    return Some(relation.relname.clone());
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        }
+        None
     }
 }
 
@@ -150,5 +209,38 @@ mod tests {
         let parser = PgQueryParser;
         let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
         assert_eq!(rewritten, "DROP TABLE \"post_migrations.test_table\"; CREATE TABLE \"post_migrations.test_table\" (id bigint) PARTITION BY RANGE(id)");
+    }
+
+    #[test]
+    fn test_extract_main_table_simple() {
+        let sql = "ALTER TABLE test_table ADD COLUMN foo INT";
+        let parser = PgQueryParser;
+        let main = parser.extract_main_table(sql);
+        assert_eq!(main, Some("test_table".to_string()));
+    }
+
+    #[test]
+    fn test_extract_main_table_drop_and_create_partitioned() {
+        let sql = "DROP TABLE test_table; CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT) PARTITION BY HASH (id); CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
+        let parser = PgQueryParser;
+        let main = parser.extract_main_table(sql);
+        // Should return the first table being dropped/created, i.e., test_table
+        assert_eq!(main, Some("test_table".to_string()));
+    }
+
+    #[test]
+    fn test_migrate_shadow_table_statement_drop_and_create_partitioned_full() {
+        let sql = "DROP TABLE test_table; \
+            CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT) PARTITION BY HASH (id); \
+            CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
+            CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
+        let parser = PgQueryParser;
+        let rewritten = parser.migrate_shadow_table_statement(sql, "test_table", "post_migrations.test_table");
+        let expected = "DROP TABLE \"post_migrations.test_table\"; \
+            CREATE TABLE \"post_migrations.test_table\" (id bigserial PRIMARY KEY, assertable text, target text) PARTITION BY HASH(id); \
+            CREATE TABLE test_table_p0 PARTITION OF \"post_migrations.test_table\" FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
+            CREATE TABLE test_table_p1 PARTITION OF \"post_migrations.test_table\" FOR VALUES WITH (MODULUS 2, REMAINDER 1)";
+        let norm_lines = |s: &str| s.lines().map(str::trim).filter(|l| !l.is_empty()).map(|l| l.to_string()).collect::<Vec<String>>();
+        assert_eq!(norm_lines(&rewritten), norm_lines(expected));
     }
 }
