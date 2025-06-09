@@ -812,6 +812,7 @@ dependencies = [
  "postgres",
  "r2d2",
  "r2d2_postgres",
+ "serde_json",
  "serial_test",
  "uuid",
 ]

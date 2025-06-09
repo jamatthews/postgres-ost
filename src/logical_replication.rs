@@ -12,7 +12,7 @@ impl Slot {
         }
     }
 
-    pub fn create_slot(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
+    pub fn create_slot<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
         let create_slot_statement = format!(
             "SELECT pg_create_logical_replication_slot('{}', '{}')",
             self.name, self.plugin
@@ -21,15 +21,15 @@ impl Slot {
         Ok(())
     }
 
-    pub fn drop_slot(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
+    pub fn drop_slot<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
         let drop_slot_statement = format!("SELECT pg_drop_replication_slot('{}')", self.name);
         client.simple_query(&drop_slot_statement)?;
         Ok(())
     }
 
-    pub fn consume_changes(
+    pub fn consume_changes<C: postgres::GenericClient>(
         &self,
-        client: &mut postgres::Client,
+        client: &mut C,
         upto_n_changes: i64,
     ) -> anyhow::Result<Vec<postgres::Row>> {
         let get_changes_statement = format!(
@@ -52,7 +52,7 @@ impl Publication {
         Publication { name, table, slot }
     }
 
-    pub fn create(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
+    pub fn create<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
         // Set REPLICA IDENTITY FULL for the table
         let identity_sql = format!("ALTER TABLE {} REPLICA IDENTITY FULL", self.table);
         client.simple_query(&identity_sql)?;
@@ -62,7 +62,7 @@ impl Publication {
         Ok(())
     }
 
-    pub fn drop(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
+    pub fn drop<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
         let drop_pub_sql = format!("DROP PUBLICATION IF EXISTS {}", self.name);
         client.simple_query(&drop_pub_sql)?;
         Ok(())
