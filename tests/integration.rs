@@ -227,4 +227,94 @@ mod integration {
         let assertable: String = row.get("assertable");
         assert_eq!(assertable, "before_swap");
     }
+
+    #[test]
+    fn test_logical_replay_with_concurrent_changes() {
+        use postgres_ost::logical_replay::LogicalReplay;
+        use postgres_ost::logical_replication::{Publication, Slot};
+        use uuid::Uuid;
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let mut client = pool.get().unwrap();
+
+        // Do the table shadow migration first
+        let migration = postgres_ost::migration::Migration::new(
+            "ALTER TABLE test_table ADD COLUMN bar TEXT",
+            &mut client,
+        );
+        migration.create_shadow_table(&mut client).unwrap();
+        migration.migrate_shadow_table(&mut client).unwrap();
+        let column_map =
+            postgres_ost::ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
+
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
+        migration.backfill_shadow_table(&mut client).unwrap();
+
+        // Set up the publication and slot
+        let slot_name = format!("logical_replay_slot_{}", Uuid::new_v4().simple());
+        let pub_name = format!("logical_replay_pub_{}", Uuid::new_v4().simple());
+        let table = postgres_ost::table::Table::new("test_table");
+        let slot = Slot::new(slot_name.clone());
+        let publication = Publication::new(pub_name.clone(), table.clone(), slot.clone());
+        publication
+            .create(&mut *client)
+            .expect("create publication");
+        slot.create_slot(&mut *client).expect("create slot");
+
+        let logical_replay = LogicalReplay {
+            slot: slot.clone(),
+            publication: publication.clone(),
+            table: migration.table.clone(),
+            shadow_table: migration.shadow_table.clone(),
+            column_map: column_map.clone(),
+            primary_key: migration.primary_key.clone(),
+        };
+        logical_replay.setup(&mut client).unwrap(); // TODO make this setup the slot and publication
+
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
+        client.simple_query("UPDATE test_table SET assertable = 'expect_row_updated' WHERE assertable = 'expect_row_to_update'").unwrap();
+        client
+            .simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'")
+            .unwrap();
+        logical_replay.replay_log(&mut client).unwrap();
+        let rows = client.query(
+            "SELECT assertable FROM post_migrations.test_table ORDER BY id",
+            &[],
+        );
+        match rows {
+            Ok(rows) => {
+                let vals: Vec<String> = rows.iter().map(|row| row.get("assertable")).collect();
+                assert!(
+                    vals.contains(&"expect_backfilled".to_string()),
+                    "Backfilled row should be present"
+                );
+                assert!(
+                    vals.contains(&"expect_row_inserted".to_string()),
+                    "Inserted row should have been replayed"
+                );
+                assert!(
+                    vals.contains(&"expect_row_updated".to_string()),
+                    "Updated row should have been replayed"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_to_update".to_string()),
+                    "Row to update should not be present after update"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_deleted".to_string()),
+                    "Deleted row should not be present after replay"
+                );
+            }
+            Err(e) => {
+                panic!("Unexpected error querying assertable: {}", e);
+            }
+        }
+        let _ = logical_replay.teardown(&mut *client); // TODO make this drop the slot and publication
+        let _ = client.simple_query(&format!("DROP PUBLICATION IF EXISTS {}", pub_name));
+        let _ = client.simple_query(&format!("SELECT pg_drop_replication_slot('{}')", slot_name));
+        let _ = publication.drop(&mut *client);
+        let _ = slot.drop_slot(&mut *client);
+    }
 }

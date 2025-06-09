@@ -33,14 +33,14 @@ impl LogicalReplay {
     }
 
     pub fn setup(&self, client: &mut Client) -> Result<()> {
-        self.publication.create(client)?;
-        self.slot.create_slot(client)?;
+        // self.publication.create(client)?;
+        // self.slot.create_slot(client)?;
         Ok(())
     }
 
     pub fn teardown<C: postgres::GenericClient>(&self, client: &mut C) -> Result<()> {
-        let _ = self.publication.drop(client);
-        let _ = self.slot.drop_slot(client);
+        // let _ = self.publication.drop(client);
+        // let _ = self.slot.drop_slot(client);
         Ok(())
     }
 
@@ -90,19 +90,35 @@ pub fn wal2json2sql(
             if let Some(changes) = json.get("change").and_then(|c| c.as_array()) {
                 for change in changes {
                     let kind = change.get("kind").and_then(|k| k.as_str()).unwrap_or("");
-                    let pk_val = change
-                        .get("columnvalues")
-                        .and_then(|v| v.as_array())
-                        .and_then(|arr| arr.first())
-                        .cloned();
-                    let pk_sql = if let Some(pk_val) = pk_val {
-                        if pk_type == &postgres::types::Type::INT4 {
-                            pk_val.as_i64().unwrap_or(0).to_string()
-                        } else {
-                            pk_val.to_string()
-                        }
+                    let pk_sql = if kind == "delete" {
+                        // For DELETE, get PK from oldkeys.keyvalues
+                        change
+                            .get("oldkeys")
+                            .and_then(|ok| ok.get("keyvalues"))
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .map(|pk_val| {
+                                if pk_type == &postgres::types::Type::INT4 {
+                                    pk_val.as_i64().unwrap_or(0).to_string()
+                                } else {
+                                    pk_val.to_string()
+                                }
+                            })
+                            .unwrap_or("NULL".to_string())
                     } else {
-                        "NULL".to_string()
+                        // For insert/update, get PK from columnvalues
+                        change
+                            .get("columnvalues")
+                            .and_then(|v| v.as_array())
+                            .and_then(|arr| arr.first())
+                            .map(|pk_val| {
+                                if pk_type == &postgres::types::Type::INT4 {
+                                    pk_val.as_i64().unwrap_or(0).to_string()
+                                } else {
+                                    pk_val.to_string()
+                                }
+                            })
+                            .unwrap_or("NULL".to_string())
                     };
                     match kind {
                         "delete" => {
