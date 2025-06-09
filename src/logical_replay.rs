@@ -32,13 +32,13 @@ impl LogicalReplay {
         Ok(())
     }
 
-    pub fn setup(&self, client: &mut Client) -> Result<()> {
+    pub fn setup(&self, _client: &mut Client) -> Result<()> {
         // self.publication.create(client)?;
         // self.slot.create_slot(client)?;
         Ok(())
     }
 
-    pub fn teardown<C: postgres::GenericClient>(&self, client: &mut C) -> Result<()> {
+    pub fn teardown<C: postgres::GenericClient>(&self, _client: &mut C) -> Result<()> {
         // let _ = self.publication.drop(client);
         // let _ = self.slot.drop_slot(client);
         Ok(())
