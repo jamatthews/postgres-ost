@@ -12,6 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Show PostgreSQL version
+        run: psql --version
+      - name: Show PostgreSQL config directory
+        run: sudo find /etc/postgresql -name postgresql.conf
       - name: Add PostgreSQL APT repository
         run: |
           sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
