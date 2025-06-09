@@ -3,6 +3,8 @@
 pub mod args;
 pub mod backfill;
 pub mod column_map;
+pub mod log_table_replay;
+pub mod logical_replay;
 pub mod logical_replication;
 pub mod migration;
 mod orchestrator;
