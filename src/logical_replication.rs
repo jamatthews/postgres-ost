@@ -41,10 +41,11 @@ impl Slot {
     }
 }
 
+#[derive(Clone)]
 pub struct Publication {
     pub name: String,
     pub table: crate::table::Table,
-    pub slot: Slot,
+    pub slot: crate::logical_replication::Slot,
 }
 
 impl Publication {

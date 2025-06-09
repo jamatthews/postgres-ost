@@ -49,6 +49,7 @@ pub fn run_replay_only(
         column_map,
         primary_key: orchestrator.migration.primary_key.clone(),
     };
+    let replay = crate::replay::ReplayImpl::LogTable(replay);
     let replay_handle = orchestrator.start_log_replay_thread(replay, stop_replay.clone());
     replay_handle.join().expect("Replay thread panicked");
     Ok(())

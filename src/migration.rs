@@ -1,6 +1,6 @@
 use crate::backfill::Backfill;
 use crate::table::Table;
-use crate::{BatchedBackfill, LogTableReplay, Parse, Replay};
+use crate::{BatchedBackfill, LogTableReplay, Parse};
 use anyhow::Result;
 use postgres::Client;
 use postgres::GenericClient;

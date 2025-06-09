@@ -6,7 +6,6 @@ mod common;
 mod integration {
     use super::common::setup_test_db;
     use postgres_ost::ColumnMap;
-    use postgres_ost::Replay;
     use postgres_ost::migration::Migration;
 
     #[test]
