@@ -5,6 +5,7 @@ on:
     branches: [ main ]
   pull_request:
     branches: [ main ]
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,6 +17,13 @@ jobs:
         with:
           toolchain: stable
           override: true
+      - name: Install wal2json and configure PostgreSQL for logical replication
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-15-wal2json
+          echo "wal_level = logical" | sudo tee -a /etc/postgresql/15/main/postgresql.conf
+          echo "shared_preload_libraries = 'wal2json'" | sudo tee -a /etc/postgresql/15/main/postgresql.conf
+          sudo systemctl restart postgresql
       - name: Start PostgreSQL
         run: sudo systemctl start postgresql
       - name: Wait for PostgreSQL to be ready
