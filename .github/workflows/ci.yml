@@ -12,6 +12,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Add PostgreSQL APT repository
+        run: |
+          sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list'
+          wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+          sudo apt-get update
       - name: Set up Rust
         uses: actions-rs/toolchain@v1
         with:
@@ -19,7 +24,6 @@ jobs:
           override: true
       - name: Install wal2json and configure PostgreSQL for logical replication
         run: |
-          sudo apt-get update
           sudo apt-get install -y postgresql-15-wal2json
           echo "wal_level = logical" | sudo tee -a /etc/postgresql/15/main/postgresql.conf
           echo "shared_preload_libraries = 'wal2json'" | sudo tee -a /etc/postgresql/15/main/postgresql.conf
