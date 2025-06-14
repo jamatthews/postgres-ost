@@ -29,14 +29,14 @@ impl Replay for LogicalReplay {
         }
         Ok(())
     }
-    fn setup(&self, _client: &mut postgres::Client) -> anyhow::Result<()> {
-        // self.publication.create(_client)?;
-        // self.slot.create_slot(_client)?;
+    fn setup(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
+        self.publication.create(client)?;
+        self.slot.create_slot(client)?;
         Ok(())
     }
-    fn teardown(&self, _transaction: &mut postgres::Transaction) -> anyhow::Result<()> {
-        // let _ = self.publication.drop(_transaction);
-        // let _ = self.slot.drop_slot(_transaction);
+    fn teardown(&self, transaction: &mut postgres::Transaction) -> anyhow::Result<()> {
+        self.slot.drop_slot(transaction)?;
+        self.publication.drop(transaction)?;
         Ok(())
     }
     fn replay_log_until_complete(

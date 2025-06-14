@@ -246,7 +246,7 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
 
-        // Do the table shadow migration first
+        // --- Setup migration and shadow table ---
         let migration = postgres_ost::migration::Migration::new(
             "ALTER TABLE test_table ADD COLUMN bar TEXT",
             &mut client,
@@ -256,22 +256,18 @@ mod integration {
         let column_map =
             postgres_ost::ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
 
+        // --- Initial data and backfill ---
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
         migration.backfill_shadow_table(&mut client).unwrap();
 
-        // Set up the publication and slot
+        // --- Logical replication setup ---
         let slot_name = format!("logical_replay_slot_{}", Uuid::new_v4().simple());
         let pub_name = format!("logical_replay_pub_{}", Uuid::new_v4().simple());
-        let table = postgres_ost::table::Table::new("test_table");
+        let table = postgres_ost::Table::new("test_table");
         let slot = Slot::new(slot_name.clone());
         let publication = Publication::new(pub_name.clone(), table.clone(), slot.clone());
-        publication
-            .create(&mut *client)
-            .expect("create publication");
-        slot.create_slot(&mut *client).expect("create slot");
-
         let logical_replay = LogicalReplay {
             slot: slot.clone(),
             publication: publication.clone(),
@@ -280,14 +276,19 @@ mod integration {
             column_map: column_map.clone(),
             primary_key: migration.primary_key.clone(),
         };
-        logical_replay.setup(&mut client).unwrap(); // TODO make this setup the slot and publication
+        logical_replay.setup(&mut client).unwrap();
 
+        // --- DML changes ---
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
         client.simple_query("UPDATE test_table SET assertable = 'expect_row_updated' WHERE assertable = 'expect_row_to_update'").unwrap();
         client
             .simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'")
             .unwrap();
+
+        // --- Replay changes ---
         logical_replay.replay_log(&mut client).unwrap();
+
+        // --- Assertions ---
         let rows = client.query(
             "SELECT assertable FROM post_migrations.test_table ORDER BY id",
             &[],
@@ -320,12 +321,10 @@ mod integration {
                 panic!("Unexpected error querying assertable: {}", e);
             }
         }
-        let mut transaction = client.transaction().unwrap(); // TODO make teardown also able to take a Client
-        let _ = logical_replay.teardown(&mut transaction); // TODO make this drop the slot and publication
+
+        // --- Teardown logical replication ---
+        let mut transaction = client.transaction().unwrap();
+        logical_replay.teardown(&mut transaction).unwrap();
         transaction.commit().unwrap();
-        let _ = client.simple_query(&format!("DROP PUBLICATION IF EXISTS {}", pub_name));
-        let _ = client.simple_query(&format!("SELECT pg_drop_replication_slot('{}')", slot_name));
-        let _ = publication.drop(&mut *client);
-        let _ = slot.drop_slot(&mut *client);
     }
 }
