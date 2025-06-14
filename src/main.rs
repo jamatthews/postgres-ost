@@ -2,8 +2,8 @@
 
 use anyhow::Result;
 use postgres_ost::Migration;
-use postgres_ost::args::{Command, get_args};
 use postgres_ost::Replay;
+use postgres_ost::args::{Command, get_args};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 use std::sync::{
