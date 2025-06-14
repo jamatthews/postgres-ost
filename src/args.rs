@@ -11,6 +11,10 @@ pub enum Strategy {
 pub struct Args {
     #[command(subcommand)]
     pub command: Command,
+
+    /// Use logical replication (wal2json) instead of log table triggers
+    #[clap(long)]
+    pub logical: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -32,6 +36,10 @@ pub enum Command {
         /// Change capture strategy: triggers (default) or logical
         #[arg(long, value_enum, default_value_t = Strategy::Triggers)]
         strategy: Strategy,
+
+        /// Use logical replication (wal2json) instead of log table triggers
+        #[clap(long)]
+        logical: bool,
     },
     /// Run only migration setup and log replay (no backfill)
     ReplayOnly {
@@ -46,6 +54,10 @@ pub enum Command {
         /// Change capture strategy: triggers (default) or logical
         #[arg(long, value_enum, default_value_t = Strategy::Triggers)]
         strategy: Strategy,
+
+        /// Use logical replication (wal2json) instead of log table triggers
+        #[clap(long)]
+        logical: bool,
     },
 }
 
