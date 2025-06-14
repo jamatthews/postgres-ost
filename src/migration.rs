@@ -1,4 +1,5 @@
 use crate::backfill::Backfill;
+use crate::replay::Replay;
 use crate::table::Table;
 use crate::{BatchedBackfill, LogTableReplay, Parse};
 use anyhow::Result;

@@ -1,7 +1,5 @@
-use crate::ColumnMap;
 use crate::backfill::{Backfill, BatchedBackfill};
-// use crate::replay::ReplayImpl; // Only needed if used below
-use crate::{LogTableReplay, Migration};
+use crate::{ColumnMap, LogTableReplay, Migration, Replay};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -15,9 +13,9 @@ impl MigrationOrchestrator {
         Self { migration, pool }
     }
 
-    pub fn start_log_replay_thread(
+    pub fn start_log_replay_thread<R: crate::replay::Replay + Send + Sync + 'static>(
         &self,
-        replay: crate::replay::ReplayImpl,
+        replay: R,
         stop_replay: std::sync::Arc<std::sync::atomic::AtomicBool>,
     ) -> std::thread::JoinHandle<()> {
         use std::sync::atomic::Ordering;
@@ -46,7 +44,7 @@ impl MigrationOrchestrator {
         })
     }
 
-    /// Factory method to build the appropriate ReplayImpl.
+    /// Factory method to build the appropriate Replay implementation.
     pub fn build_replay(&self, column_map: ColumnMap, use_logical: bool) -> LogTableReplay {
         if use_logical {
             // TODO: You must provide slot and publication from somewhere; this is a placeholder
@@ -64,27 +62,20 @@ impl MigrationOrchestrator {
         }
     }
 
-    pub fn orchestrate(&self, execute: bool) -> anyhow::Result<()> {
+    /// Orchestrate the migration, assuming all setup is already done and a concrete Replay is provided.
+    pub fn orchestrate<T: Replay + Clone + Send + Sync + 'static>(
+        &self,
+        execute: bool,
+        column_map: ColumnMap,
+        replay: T,
+    ) -> anyhow::Result<()> {
         use std::sync::{
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        let mut client = self.pool.get()?;
-        // Ensure migration setup (creates shadow table etc) before querying columns
-        self.migration.setup_migration(&mut client)?;
-        // Build ColumnMap and ReplayImpl once
-        let column_map = ColumnMap::new(
-            &self.migration.table,
-            &self.migration.shadow_table,
-            &mut *client,
-        );
-        let replay = self.build_replay(column_map.clone(), false); // set to true for logical replay
-        drop(client); // Return the connection to the pool before starting threads
+        // All setup (migration, column_map, replay construction) must be done by the caller
         let stop_replay = Arc::new(AtomicBool::new(false));
-        let replay_handle = self.start_log_replay_thread(
-            crate::replay::ReplayImpl::LogTable(replay.clone()),
-            stop_replay.clone(),
-        );
+        let replay_handle = self.start_log_replay_thread(replay.clone(), stop_replay.clone());
         let backfill_handle = self.start_backfill_thread(
             column_map.clone(),
             self.migration.table.clone(),
@@ -96,12 +87,15 @@ impl MigrationOrchestrator {
         let mut client = self.pool.get()?;
         if execute {
             let mut transaction = client.transaction()?;
+            self.migration.table.lock_table(&mut transaction)?;
             replay.replay_log_until_complete(&mut transaction)?;
             replay.teardown(&mut transaction)?;
             self.migration.swap_tables(&mut transaction)?;
             transaction.commit()?;
         } else {
-            replay.teardown(&mut *client)?;
+            let mut transaction = client.transaction()?;
+            replay.teardown(&mut transaction)?;
+            transaction.commit()?;
         }
         Ok(())
     }

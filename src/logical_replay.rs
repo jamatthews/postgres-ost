@@ -1,9 +1,7 @@
 // logical_replay.rs
 // Contains LogicalReplay and related logic.
 
-use crate::{ColumnMap, PrimaryKeyInfo};
-use anyhow::Result;
-use postgres::Client;
+use crate::{ColumnMap, PrimaryKeyInfo, Replay};
 
 #[derive(Clone)]
 pub struct LogicalReplay {
@@ -15,8 +13,8 @@ pub struct LogicalReplay {
     pub primary_key: crate::PrimaryKeyInfo,
 }
 
-impl LogicalReplay {
-    pub fn replay_log(&self, client: &mut Client) -> Result<()> {
+impl Replay for LogicalReplay {
+    fn replay_log(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
         // Consume changes from the slot
         let rows = self.slot.consume_changes(client, 100)?;
         let statements = wal2json2sql(
@@ -31,25 +29,22 @@ impl LogicalReplay {
         }
         Ok(())
     }
-
-    pub fn setup(&self, _client: &mut Client) -> Result<()> {
-        // self.publication.create(client)?;
-        // self.slot.create_slot(client)?;
+    fn setup(&self, _client: &mut postgres::Client) -> anyhow::Result<()> {
+        // self.publication.create(_client)?;
+        // self.slot.create_slot(_client)?;
         Ok(())
     }
-
-    pub fn teardown<C: postgres::GenericClient>(&self, _client: &mut C) -> Result<()> {
-        // let _ = self.publication.drop(client);
-        // let _ = self.slot.drop_slot(client);
+    fn teardown(&self, _transaction: &mut postgres::Transaction) -> anyhow::Result<()> {
+        // let _ = self.publication.drop(_transaction);
+        // let _ = self.slot.drop_slot(_transaction);
         Ok(())
     }
-
-    pub fn replay_log_until_complete<C: postgres::GenericClient>(
+    fn replay_log_until_complete(
         &self,
-        client: &mut C,
+        transaction: &mut postgres::Transaction,
     ) -> anyhow::Result<()> {
         loop {
-            let rows = self.slot.consume_changes(client, 100)?;
+            let rows = self.slot.consume_changes(transaction, 100)?;
             if rows.is_empty() {
                 break;
             }
@@ -61,7 +56,7 @@ impl LogicalReplay {
                 &self.primary_key,
             );
             for stmt in statements {
-                client.batch_execute(&stmt)?;
+                transaction.batch_execute(&stmt)?;
             }
         }
         Ok(())

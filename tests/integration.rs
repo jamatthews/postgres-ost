@@ -5,8 +5,7 @@ mod common;
 #[cfg(test)]
 mod integration {
     use super::common::setup_test_db;
-    use postgres_ost::ColumnMap;
-    use postgres_ost::migration::Migration;
+    use postgres_ost::{ColumnMap, Migration, Replay};
 
     #[test]
     fn test_replay_only_subcommand() {
@@ -208,8 +207,18 @@ mod integration {
         let migration = Migration::new(migration_sql, &mut client);
         let orchestrator =
             postgres_ost::MigrationOrchestrator::new(migration.clone(), pool.clone());
+        migration.setup_migration(&mut client).unwrap();
+        let column_map =
+            postgres_ost::ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
+        let replay = postgres_ost::LogTableReplay {
+            log_table: migration.log_table.clone(),
+            shadow_table: migration.shadow_table.clone(),
+            table: migration.table.clone(),
+            column_map: column_map.clone(),
+            primary_key: migration.primary_key.clone(),
+        };
         // Run the orchestrator in execute mode (performs swap)
-        orchestrator.orchestrate(true).unwrap();
+        orchestrator.orchestrate(true, column_map, replay).unwrap();
         // After swap, the new table should be in public, and have the new column
         let row = client
             .query_one(
@@ -311,7 +320,9 @@ mod integration {
                 panic!("Unexpected error querying assertable: {}", e);
             }
         }
-        let _ = logical_replay.teardown(&mut *client); // TODO make this drop the slot and publication
+        let mut transaction = client.transaction().unwrap(); // TODO make teardown also able to take a Client
+        let _ = logical_replay.teardown(&mut transaction); // TODO make this drop the slot and publication
+        transaction.commit().unwrap();
         let _ = client.simple_query(&format!("DROP PUBLICATION IF EXISTS {}", pub_name));
         let _ = client.simple_query(&format!("SELECT pg_drop_replication_slot('{}')", slot_name));
         let _ = publication.drop(&mut *client);

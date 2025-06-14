@@ -15,13 +15,18 @@ pub mod table;
 
 // Re-export key types for ergonomic access
 
-pub use self::table::*;
+pub use crate::column_map::ColumnMap;
+pub use crate::log_table_replay::LogTableReplay;
+pub use crate::log_table_replay::PrimaryKey;
+pub use crate::logical_replay::LogicalReplay;
+pub use crate::logical_replay::wal2json2sql;
+pub use crate::migration::PrimaryKeyInfo;
+pub use crate::replay::Replay;
+pub use crate::table::Table;
 pub use backfill::*;
-pub use column_map::*;
 pub use migration::*;
 pub use orchestrator::MigrationOrchestrator;
 pub use parse::*;
-pub use replay::*;
 
 use anyhow::Result;
 use r2d2::Pool;
@@ -51,7 +56,6 @@ pub fn run_replay_only(
         column_map,
         primary_key: orchestrator.migration.primary_key.clone(),
     };
-    let replay = crate::replay::ReplayImpl::LogTable(replay);
     let replay_handle = orchestrator.start_log_replay_thread(replay, stop_replay.clone());
     replay_handle.join().expect("Replay thread panicked");
     Ok(())

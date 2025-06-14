@@ -23,9 +23,21 @@ fn main() -> Result<()> {
             let pool = Pool::new(manager)?;
             let mut client = pool.get()?;
             let migration = Migration::new(&sql, &mut client);
-            drop(client);
+            migration.setup_migration(&mut client)?;
+            let column_map = postgres_ost::ColumnMap::new(
+                &migration.table,
+                &migration.shadow_table,
+                &mut *client,
+            );
+            let replay = postgres_ost::LogTableReplay {
+                log_table: migration.log_table.clone(),
+                shadow_table: migration.shadow_table.clone(),
+                table: migration.table.clone(),
+                column_map: column_map.clone(),
+                primary_key: migration.primary_key.clone(),
+            };
             let orchestrator = postgres_ost::MigrationOrchestrator::new(migration, pool);
-            orchestrator.orchestrate(execute)?;
+            orchestrator.orchestrate(execute, column_map, replay)?;
         }
         Command::ReplayOnly {
             uri,

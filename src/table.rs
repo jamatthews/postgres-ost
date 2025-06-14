@@ -80,4 +80,11 @@ impl Table {
         client.simple_query(&sql)?;
         Ok(())
     }
+
+    /// Locks the table in ACCESS EXCLUSIVE mode for the duration of the transaction.
+    pub fn lock_table(&self, transaction: &mut postgres::Transaction) -> anyhow::Result<()> {
+        let sql = format!("LOCK TABLE {} IN ACCESS EXCLUSIVE MODE", self.name);
+        transaction.batch_execute(&sql)?;
+        Ok(())
+    }
 }
