@@ -16,7 +16,7 @@ pub struct LogicalReplay {
 impl Replay for LogicalReplay {
     fn replay_log(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
         // Consume changes from the slot
-        let rows = self.slot.consume_changes(client, 100)?;
+        let rows = self.slot.get_changes(client, 100)?;
         let statements = wal2json2sql(
             &rows,
             &self.column_map,
@@ -44,7 +44,7 @@ impl Replay for LogicalReplay {
         transaction: &mut postgres::Transaction,
     ) -> anyhow::Result<()> {
         loop {
-            let rows = self.slot.consume_changes(transaction, 100)?;
+            let rows = self.slot.get_changes(transaction, 100)?;
             if rows.is_empty() {
                 break;
             }

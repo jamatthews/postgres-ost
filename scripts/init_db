@@ -12,6 +12,9 @@ psql -d postgres -c "ALTER USER post_test CREATEDB;"
 # Grant REPLICATION privilege to 'post_test' user
 psql -d postgres -c "ALTER USER post_test WITH REPLICATION;"
 
+# Reduce the wal_sender_timeout to 5 seconds. We do this to avoid long waits in tests
+psql -d postgres -c "ALTER SYSTEM SET wal_sender_timeout = '5s'; SELECT pg_reload_conf();"
+
 # Create database 'post_test' owned by 'post_test' if it doesn't exist
 psql -d postgres -tc "SELECT 1 FROM pg_database WHERE datname='post_test'" | grep -q 1 || psql -d postgres -c "CREATE DATABASE post_test OWNER post_test;"
 

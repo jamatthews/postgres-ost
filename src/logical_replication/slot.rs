@@ -1,7 +1,9 @@
+// Slot management for logical replication
+
 #[derive(Clone)]
 pub struct Slot {
-    name: String,
-    plugin: String,
+    pub name: String,
+    pub plugin: String,
 }
 
 impl Slot {
@@ -27,7 +29,7 @@ impl Slot {
         Ok(())
     }
 
-    pub fn consume_changes<C: postgres::GenericClient>(
+    pub fn get_changes<C: postgres::GenericClient>(
         &self,
         client: &mut C,
         upto_n_changes: i64,
@@ -39,33 +41,22 @@ impl Slot {
         let rows = client.query(&get_changes_statement, &[])?;
         Ok(rows)
     }
-}
 
-#[derive(Clone)]
-pub struct Publication {
-    pub name: String,
-    pub table: crate::table::Table,
-    pub slot: crate::logical_replication::Slot,
-}
-
-impl Publication {
-    pub fn new(name: String, table: crate::table::Table, slot: Slot) -> Self {
-        Publication { name, table, slot }
-    }
-
-    pub fn create<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
-        // Set REPLICA IDENTITY FULL for the table
-        let identity_sql = format!("ALTER TABLE {} REPLICA IDENTITY FULL", self.table);
-        client.simple_query(&identity_sql)?;
-        // Create the publication
-        let create_pub_sql = format!("CREATE PUBLICATION {} FOR TABLE {}", self.name, self.table);
-        client.simple_query(&create_pub_sql)?;
-        Ok(())
-    }
-
-    pub fn drop<C: postgres::GenericClient>(&self, client: &mut C) -> anyhow::Result<()> {
-        let drop_pub_sql = format!("DROP PUBLICATION IF EXISTS {}", self.name);
-        client.simple_query(&drop_pub_sql)?;
-        Ok(())
+    /// Fetch the confirmed_flush_lsn for this slot from the database.
+    pub fn confirmed_flush_lsn(
+        &self,
+        client: &mut postgres::Client,
+    ) -> anyhow::Result<crate::logical_replication::message::Lsn> {
+        let row = client.query_one(
+            &format!(
+                "SELECT confirmed_flush_lsn FROM pg_replication_slots WHERE slot_name = '{}'",
+                self.name
+            ),
+            &[],
+        )?;
+        let pg_lsn: postgres::types::PgLsn = row.get(0);
+        let lsn_str = pg_lsn.to_string();
+        crate::logical_replication::message::Lsn::from_pg_string(&lsn_str)
+            .ok_or_else(|| anyhow::anyhow!("Failed to parse confirmed_flush_lsn: {}", lsn_str))
     }
 }

@@ -25,7 +25,7 @@ fn test_create_and_drop_slot() {
 }
 
 #[test]
-fn test_consume_changes() {
+fn test_get_changes() {
     let test_db = common::setup_test_db();
     let mut pooled = test_db.pool.get().unwrap();
     let client: &mut postgres::Client = &mut pooled;
@@ -35,7 +35,7 @@ fn test_consume_changes() {
     let _ = slot.drop_slot(client);
     slot.create_slot(client).expect("create slot");
     // Consume changes (should be empty at first)
-    let consumed = slot.consume_changes(client, 10).expect("consume changes");
+    let consumed = slot.get_changes(client, 10).expect("consume changes");
     // Accept either for now (should be empty, but test infra may vary)
     assert!(consumed.is_empty() || !consumed.is_empty());
     slot.drop_slot(client).expect("drop slot");
@@ -62,7 +62,7 @@ fn test_publication_and_logical_replication() {
         .simple_query("INSERT INTO test_table (assertable, target) VALUES ('foo', 'bar')")
         .unwrap();
     // Consume changes
-    let changes = slot.consume_changes(client, 10).expect("consume changes");
+    let changes = slot.get_changes(client, 10).expect("consume changes");
     let found = changes.iter().any(|row| {
         let txt: String = row.get("data");
         txt.contains("foo") && txt.contains("bar")
