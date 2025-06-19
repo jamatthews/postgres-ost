@@ -117,3 +117,13 @@ impl LogicalReplicationStream {
         self.last_lsn
     }
 }
+
+/// Emit a logical replication message to the stream using pg_logical_emit_message.
+/// This is used to mark a point in the WAL for cutover replay completion.
+pub fn emit_replay_complete_message(client: &mut postgres::Client) -> anyhow::Result<()> {
+    // non-transactional, prefix as text, body as bytea, flush immediately
+    client.batch_execute(
+        "SELECT pg_logical_emit_message(false, 'postgres-ost', convert_to('replay complete', 'UTF8'), true);"
+    )?;
+    Ok(())
+}

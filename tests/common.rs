@@ -34,6 +34,18 @@ pub fn setup_test_db() -> TestDb {
     TestDb { pool, dbname }
 }
 
+#[cfg(test)]
+impl TestDb {
+    #[allow(dead_code)]
+    pub fn get_client(
+        &self,
+    ) -> r2d2::PooledConnection<
+        r2d2_postgres::PostgresConnectionManager<r2d2_postgres::postgres::NoTls>,
+    > {
+        self.pool.get().unwrap()
+    }
+}
+
 impl Drop for TestDb {
     fn drop(&mut self) {
         let db_url = std::env::var("POSTGRES_OST_TEST_DB_URL")
