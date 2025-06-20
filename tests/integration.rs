@@ -5,7 +5,8 @@ mod common;
 #[cfg(test)]
 mod integration {
     use super::common::setup_test_db;
-    use postgres_ost::{ColumnMap, Migration, Replay};
+    use postgres_ost::Backfill;
+    use postgres_ost::Replay;
 
     #[test]
     fn test_replay_only_subcommand() {
@@ -13,7 +14,6 @@ mod integration {
             Arc,
             atomic::{AtomicBool, Ordering},
         };
-        use std::thread;
         use std::time::Duration;
         let test_db = setup_test_db();
         let pool = &test_db.pool;
@@ -22,23 +22,19 @@ mod integration {
             .simple_query("INSERT INTO test_table (assertable) VALUES ('before')")
             .unwrap();
         let stop_replay = Arc::new(AtomicBool::new(false));
-        let pool2 = pool.clone();
-        let stop_replay2 = stop_replay.clone();
-        let replay_thread = thread::spawn(move || {
-            postgres_ost::run_replay_only(
-                &pool2,
-                "ALTER TABLE test_table ADD COLUMN bar TEXT",
-                stop_replay2,
-            )
-            .unwrap();
-        });
-        thread::sleep(Duration::from_secs(2));
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let handle = runner.run_replay_only(
+            "ALTER TABLE test_table ADD COLUMN bar TEXT",
+            false, // log-based replay
+            stop_replay.clone(),
+        );
+        std::thread::sleep(Duration::from_secs(2));
         client
             .simple_query("INSERT INTO test_table (assertable) VALUES ('after')")
             .unwrap();
-        thread::sleep(Duration::from_secs(2));
+        std::thread::sleep(Duration::from_secs(2));
         stop_replay.store(true, Ordering::Relaxed);
-        replay_thread.join().expect("Replay thread panicked");
+        handle.join().expect("Replay thread panicked").unwrap();
         let row = client
             .query_one(
                 "SELECT assertable FROM post_migrations.test_table WHERE assertable = 'after'",
@@ -56,25 +52,17 @@ mod integration {
     fn run_concurrent_change_test(alter_table_sql: &str) {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
         let mut client = pool.get().unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
 
-        let migration = Migration::new(alter_table_sql, &mut client);
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap();
-        let column_map = ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
-        let replay = postgres_ost::replay::LogTableReplay {
-            log_table: migration.log_table.clone(),
-            shadow_table: migration.shadow_table.clone(),
-            table: migration.table.clone(),
-            column_map: column_map.clone(),
-            primary_key: migration.primary_key.clone(),
-        };
-        replay.setup(&mut client).unwrap();
-
-        migration.backfill_shadow_table(&mut client).unwrap();
+        // Use MigrationRunner for schema migration
+        let (migration, column_map) = runner.run_schema_migration(alter_table_sql).unwrap();
+        runner.run_replay_setup(&migration, &column_map).unwrap();
+        // Use MigrationRunner for backfill
+        runner.run_backfill(&migration).unwrap();
 
         // DML
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
@@ -82,7 +70,8 @@ mod integration {
         client
             .simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'")
             .unwrap();
-        migration.replay_log(&mut client).unwrap();
+        // Use MigrationRunner for replay
+        runner.run_replay(&migration, &column_map).unwrap();
 
         // Generic assertion logic (always on 'assertable')
         let rows = client.query(
@@ -135,20 +124,20 @@ mod integration {
     }
 
     #[test]
-    fn test_migration_new_with_simple_add_column() {
+    fn test_migration_with_simple_add_column() {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let mut client = pool.get().unwrap();
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
-        let migration = Migration::new(migration_sql, &mut client);
+        let (migration, column_map) = runner.run_schema_migration(migration_sql).unwrap();
+        runner.run_replay_setup(&migration, &column_map).unwrap();
         assert_eq!(migration.table.to_string(), "test_table");
         assert_eq!(
             migration.shadow_table.to_string(),
             "post_migrations.test_table"
         );
-        // assert!(migration.shadow_table_migrate_sql.contains("ALTER TABLE post_migrations.test_table ADD COLUMN foo TEXT"));
-        migration.setup_migration(&mut client).unwrap();
         // Now check if the shadow table has the new column
+        let mut client = pool.get().unwrap();
         let row = client.query_one(
             "SELECT column_name FROM information_schema.columns WHERE table_schema = 'post_migrations' AND table_name = 'test_table' AND column_name = 'foo'",
             &[],
@@ -158,18 +147,19 @@ mod integration {
     }
 
     #[test]
-    fn test_migration_new_with_partitioned_table_sql() {
+    fn test_migration_with_partitioned_table_sql() {
         // Use the test DB helper to ensure permissions and schema
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let mut client = pool.get().unwrap();
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let _client = pool.get().unwrap();
         // Ensure the table exists for PK detection
-        client.batch_execute("DROP TABLE IF EXISTS test_table CASCADE; CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT);").unwrap();
         let migration_sql = "DROP TABLE test_table; \
             CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT) PARTITION BY HASH (id); \
             CREATE TABLE test_table_p0 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 0); \
             CREATE TABLE test_table_p1 PARTITION OF test_table FOR VALUES WITH (MODULUS 2, REMAINDER 1);";
-        let migration = postgres_ost::migration::Migration::new(migration_sql, &mut client);
+        let (migration, column_map) = runner.run_schema_migration(migration_sql).unwrap();
+        runner.run_replay_setup(&migration, &column_map).unwrap();
         assert_eq!(migration.table.to_string(), "test_table");
         assert_eq!(
             migration.shadow_table.to_string(),
@@ -195,6 +185,7 @@ mod integration {
     fn test_full_migration_execute_swaps_tables() {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
         let mut client = pool.get().unwrap();
         // Insert a row into the original table
         client
@@ -204,21 +195,8 @@ mod integration {
             .unwrap();
         // Prepare migration SQL
         let migration_sql = "ALTER TABLE test_table ADD COLUMN swapped INTEGER DEFAULT 42;";
-        let migration = Migration::new(migration_sql, &mut client);
-        let orchestrator =
-            postgres_ost::MigrationOrchestrator::new(migration.clone(), pool.clone());
-        migration.setup_migration(&mut client).unwrap();
-        let column_map =
-            postgres_ost::ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
-        let replay = postgres_ost::LogTableReplay {
-            log_table: migration.log_table.clone(),
-            shadow_table: migration.shadow_table.clone(),
-            table: migration.table.clone(),
-            column_map: column_map.clone(),
-            primary_key: migration.primary_key.clone(),
-        };
-        // Run the orchestrator in execute mode (performs swap)
-        orchestrator.orchestrate(true, column_map, replay).unwrap();
+        // Use run_migrate to perform the migration and swap
+        runner.run_migrate(migration_sql, true, false).unwrap();
         // After swap, the new table should be in public, and have the new column
         let row = client
             .query_one(
@@ -260,7 +238,16 @@ mod integration {
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
-        migration.backfill_shadow_table(&mut client).unwrap();
+        // Replace removed method with equivalent logic using BatchedBackfill
+        let backfill = postgres_ost::backfill::BatchedBackfill { batch_size: 1000 };
+        backfill
+            .backfill(
+                &migration.table,
+                &migration.shadow_table,
+                &column_map,
+                &mut client,
+            )
+            .unwrap();
 
         // --- Logical replication setup ---
         let slot_name = format!("logical_replay_slot_{}", Uuid::new_v4().simple());

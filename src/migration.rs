@@ -1,13 +1,9 @@
-use crate::backfill::Backfill;
-use crate::replay::Replay;
+use crate::parse::Parse;
 use crate::table::Table;
-use crate::{BatchedBackfill, LogTableReplay, Parse};
 use anyhow::Result;
 use postgres::Client;
 use postgres::GenericClient;
 use postgres::types::Type;
-
-use crate::ColumnMap;
 
 #[derive(Clone)]
 pub struct PrimaryKeyInfo {
@@ -66,44 +62,12 @@ impl Migration {
         Ok(())
     }
 
-    #[allow(dead_code)]
-    pub fn backfill_shadow_table(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
-        BatchedBackfill { batch_size: 1000 }.backfill(
-            &self.table,
-            &self.shadow_table,
-            &column_map,
-            client,
-        )
-    }
-
-    pub fn replay_log(&self, client: &mut Client) -> Result<(), anyhow::Error> {
-        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
-        let replay = LogTableReplay {
-            log_table: self.log_table.clone(),
-            shadow_table: self.shadow_table.clone(),
-            table: self.table.clone(),
-            column_map,
-            primary_key: self.primary_key.clone(),
-        };
-        replay.replay_log(client)?;
-        Ok(())
-    }
-
     pub fn setup_migration(&self, client: &mut Client) -> anyhow::Result<()> {
         self.create_post_migrations_schema(client)?;
         self.shadow_table.drop_if_exists(client)?;
         self.create_shadow_table(client)?;
         self.migrate_shadow_table(client)?;
-        let column_map = ColumnMap::new(&self.table, &self.shadow_table, client);
-        let replay = LogTableReplay {
-            log_table: self.log_table.clone(),
-            shadow_table: self.shadow_table.clone(),
-            table: self.table.clone(),
-            column_map,
-            primary_key: self.primary_key.clone(),
-        };
-        replay.setup(client)?;
+        // No replay setup here; caller is responsible for replay setup if needed
         Ok(())
     }
 

@@ -129,10 +129,8 @@ pub fn wal2json2sql(
                 };
                 match kind {
                     "delete" => {
-                        let stmt = format!(
-                            "DELETE FROM {} WHERE {} = {}",
-                            shadow_table, pk_col, pk_sql
-                        );
+                        let stmt =
+                            format!("DELETE FROM {} WHERE {} = {}", shadow_table, pk_col, pk_sql);
                         statements.push(stmt);
                     }
                     "insert" => {

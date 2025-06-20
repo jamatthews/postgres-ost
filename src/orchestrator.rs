@@ -1,5 +1,5 @@
 use crate::backfill::{Backfill, BatchedBackfill};
-use crate::{ColumnMap, LogTableReplay, Migration, Replay};
+use crate::{ColumnMap, Migration, Replay};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -42,24 +42,6 @@ impl MigrationOrchestrator {
         std::thread::spawn(move || {
             backfill.backfill(&table, &shadow_table, &column_map, &mut backfill_client)
         })
-    }
-
-    /// Factory method to build the appropriate Replay implementation.
-    pub fn build_replay(&self, column_map: ColumnMap, use_logical: bool) -> LogTableReplay {
-        if use_logical {
-            // TODO: You must provide slot and publication from somewhere; this is a placeholder
-            unimplemented!(
-                "LogicalReplay construction requires slot and publication fields in Migration"
-            );
-        } else {
-            LogTableReplay {
-                log_table: self.migration.log_table.clone(),
-                shadow_table: self.migration.shadow_table.clone(),
-                table: self.migration.table.clone(),
-                column_map,
-                primary_key: self.migration.primary_key.clone(),
-            }
-        }
     }
 
     /// Orchestrate the migration, assuming all setup is already done and a concrete Replay is provided.
