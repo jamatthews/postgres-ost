@@ -93,36 +93,6 @@ impl MigrationRunner {
         })
     }
 
-    // Helper for static context
-    pub fn build_replay_static(
-        migration: &Migration,
-        column_map: &ColumnMap,
-        logical: bool,
-    ) -> ReplayKind {
-        if logical {
-            let slot_name = format!("ost_slot_{}", uuid::Uuid::new_v4().simple());
-            let pub_name = format!("ost_pub_{}", uuid::Uuid::new_v4().simple());
-            let slot = Slot::new(slot_name);
-            let publication = Publication::new(pub_name, migration.table.clone(), slot.clone());
-            ReplayKind::Logical(LogicalReplay {
-                slot,
-                publication,
-                table: migration.table.clone(),
-                shadow_table: migration.shadow_table.clone(),
-                column_map: column_map.clone(),
-                primary_key: migration.primary_key.clone(),
-            })
-        } else {
-            ReplayKind::Log(LogTableReplay {
-                log_table: migration.log_table.clone(),
-                shadow_table: migration.shadow_table.clone(),
-                table: migration.table.clone(),
-                column_map: column_map.clone(),
-                primary_key: migration.primary_key.clone(),
-            })
-        }
-    }
-
     pub fn run_backfill(&self, migration: &Migration) -> Result<()> {
         let mut client = self.pool.get()?;
         let column_map = ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
