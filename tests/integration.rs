@@ -5,7 +5,6 @@ mod common;
 #[cfg(test)]
 mod integration {
     use super::common::setup_test_db;
-    use postgres_ost::Backfill;
     use postgres_ost::Replay;
 
     #[test]
@@ -217,53 +216,30 @@ mod integration {
 
     #[test]
     fn test_logical_replay_with_concurrent_changes() {
-        use postgres_ost::logical_replay::LogicalReplay;
-        use postgres_ost::logical_replication::{Publication, Slot};
-        use uuid::Uuid;
         let test_db = setup_test_db();
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
 
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
         // --- Setup migration and shadow table ---
-        let migration = postgres_ost::migration::Migration::new(
-            "ALTER TABLE test_table ADD COLUMN bar TEXT",
-            &mut client,
-        );
-        migration.create_shadow_table(&mut client).unwrap();
-        migration.migrate_shadow_table(&mut client).unwrap();
-        let column_map =
-            postgres_ost::ColumnMap::new(&migration.table, &migration.shadow_table, &mut *client);
+        let (migration, column_map) = runner
+            .run_schema_migration("ALTER TABLE test_table ADD COLUMN bar TEXT")
+            .unwrap();
 
         // --- Initial data and backfill ---
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
-        // Replace removed method with equivalent logic using BatchedBackfill
-        let backfill = postgres_ost::backfill::BatchedBackfill { batch_size: 1000 };
-        backfill
-            .backfill(
-                &migration.table,
-                &migration.shadow_table,
-                &column_map,
-                &mut client,
-            )
-            .unwrap();
+        runner.run_backfill(&migration).unwrap();
 
         // --- Logical replication setup ---
-        let slot_name = format!("logical_replay_slot_{}", Uuid::new_v4().simple());
-        let pub_name = format!("logical_replay_pub_{}", Uuid::new_v4().simple());
-        let table = postgres_ost::Table::new("test_table");
-        let slot = Slot::new(slot_name.clone());
-        let publication = Publication::new(pub_name.clone(), table.clone(), slot.clone());
-        let logical_replay = LogicalReplay {
-            slot: slot.clone(),
-            publication: publication.clone(),
-            table: migration.table.clone(),
-            shadow_table: migration.shadow_table.clone(),
-            column_map: column_map.clone(),
-            primary_key: migration.primary_key.clone(),
+        let replay_kind = runner
+            .build_and_setup_replay(&migration, &column_map, true)
+            .unwrap();
+        let logical_replay = match replay_kind {
+            postgres_ost::migration_runner::ReplayKind::Logical(lr) => lr,
+            _ => panic!("Expected logical replay kind"),
         };
-        logical_replay.setup(&mut client).unwrap();
 
         // --- DML changes ---
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();

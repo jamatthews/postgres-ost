@@ -163,4 +163,52 @@ impl MigrationRunner {
             })
         }
     }
+
+    pub fn build_and_setup_replay(
+        &self,
+        migration: &Migration,
+        column_map: &ColumnMap,
+        logical: bool,
+    ) -> Result<ReplayKind> {
+        let mut client = self.pool.get()?;
+        let replay_kind = if logical {
+            let logical_replay = self.build_logical_replay(migration, column_map);
+            logical_replay.setup(&mut client)?;
+            ReplayKind::Logical(logical_replay)
+        } else {
+            let log_table_replay = self.build_log_table_replay(migration, column_map);
+            log_table_replay.setup(&mut client)?;
+            ReplayKind::Log(log_table_replay)
+        };
+        Ok(replay_kind)
+    }
+
+    fn build_logical_replay(&self, migration: &Migration, column_map: &ColumnMap) -> LogicalReplay {
+        let slot_name = format!("ost_slot_{}", uuid::Uuid::new_v4().simple());
+        let pub_name = format!("ost_pub_{}", uuid::Uuid::new_v4().simple());
+        let slot = Slot::new(slot_name);
+        let publication = Publication::new(pub_name, migration.table.clone(), slot.clone());
+        LogicalReplay {
+            slot,
+            publication,
+            table: migration.table.clone(),
+            shadow_table: migration.shadow_table.clone(),
+            column_map: column_map.clone(),
+            primary_key: migration.primary_key.clone(),
+        }
+    }
+
+    fn build_log_table_replay(
+        &self,
+        migration: &Migration,
+        column_map: &ColumnMap,
+    ) -> LogTableReplay {
+        LogTableReplay {
+            log_table: migration.log_table.clone(),
+            shadow_table: migration.shadow_table.clone(),
+            table: migration.table.clone(),
+            column_map: column_map.clone(),
+            primary_key: migration.primary_key.clone(),
+        }
+    }
 }
