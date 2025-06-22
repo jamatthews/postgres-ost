@@ -21,10 +21,13 @@ mod integration {
             .simple_query("INSERT INTO test_table (assertable) VALUES ('before')")
             .unwrap();
         let stop_replay = Arc::new(AtomicBool::new(false));
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         let handle = runner.run_replay_only(
             "ALTER TABLE test_table ADD COLUMN bar TEXT",
-            false, // log-based replay
+            postgres_ost::migration_runner::ReplayMode::Log,
             stop_replay.clone(),
         );
         std::thread::sleep(Duration::from_secs(2));
@@ -51,7 +54,10 @@ mod integration {
     fn run_concurrent_change_test(alter_table_sql: &str) {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         let mut client = pool.get().unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
         client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
@@ -126,7 +132,10 @@ mod integration {
     fn test_migration_with_simple_add_column() {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         let migration_sql = "ALTER TABLE test_table ADD COLUMN foo TEXT;";
         let (migration, column_map) = runner.run_schema_migration(migration_sql).unwrap();
         runner.run_replay_setup(&migration, &column_map).unwrap();
@@ -150,7 +159,10 @@ mod integration {
         // Use the test DB helper to ensure permissions and schema
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         let _client = pool.get().unwrap();
         // Ensure the table exists for PK detection
         let migration_sql = "DROP TABLE test_table; \
@@ -184,7 +196,10 @@ mod integration {
     fn test_full_migration_execute_swaps_tables() {
         let test_db = setup_test_db();
         let pool = &test_db.pool;
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         let mut client = pool.get().unwrap();
         // Insert a row into the original table
         client
@@ -195,7 +210,13 @@ mod integration {
         // Prepare migration SQL
         let migration_sql = "ALTER TABLE test_table ADD COLUMN swapped INTEGER DEFAULT 42;";
         // Use run_migrate to perform the migration and swap
-        runner.run_migrate(migration_sql, true, false).unwrap();
+        runner
+            .run_migrate(
+                migration_sql,
+                true,
+                postgres_ost::migration_runner::ReplayMode::Log,
+            )
+            .unwrap();
         // After swap, the new table should be in public, and have the new column
         let row = client
             .query_one(
@@ -220,7 +241,10 @@ mod integration {
         let pool = &test_db.pool;
         let mut client = pool.get().unwrap();
 
-        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(pool.clone());
+        let runner = postgres_ost::migration_runner::MigrationRunner::from_pool(
+            pool.clone(),
+            test_db.test_db_url.clone(),
+        );
         // --- Setup migration and shadow table ---
         let (migration, column_map) = runner
             .run_schema_migration("ALTER TABLE test_table ADD COLUMN bar TEXT")
@@ -234,7 +258,11 @@ mod integration {
 
         // --- Logical replication setup ---
         let replay_kind = runner
-            .build_and_setup_replay(&migration, &column_map, true)
+            .build_and_setup_replay(
+                &migration,
+                &column_map,
+                postgres_ost::migration_runner::ReplayMode::Logical,
+            )
             .unwrap();
         let logical_replay = match replay_kind {
             postgres_ost::migration_runner::ReplayKind::Logical(lr) => lr,
@@ -289,5 +317,35 @@ mod integration {
         let mut transaction = client.transaction().unwrap();
         logical_replay.teardown(&mut transaction).unwrap();
         transaction.commit().unwrap();
+    }
+
+    #[test]
+    fn test_streaming_logical_replay_migration() {
+        use postgres_ost::migration_runner::{MigrationRunner, ReplayKind};
+        let test_db = setup_test_db();
+        let pool = &test_db.pool;
+        let runner = MigrationRunner::from_pool(pool.clone(), test_db.test_db_url.clone());
+
+        // Run migration
+        let (migration, column_map) = runner
+            .run_schema_migration("ALTER TABLE test_table ADD COLUMN bar TEXT")
+            .expect("Migration failed");
+
+        // Build and setup streaming logical replay
+        let replay_kind = runner
+            .build_and_setup_replay(
+                &migration,
+                &column_map,
+                postgres_ost::migration_runner::ReplayMode::StreamingLogical,
+            )
+            .expect("Failed to build and setup streaming logical replay");
+
+        // Only check that we get the correct variant and setup does not error
+        match replay_kind {
+            ReplayKind::StreamingLogical(_) => {
+                // Success: setup and construction worked
+            }
+            _ => panic!("Expected StreamingLogicalReplay kind"),
+        }
     }
 }

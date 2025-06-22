@@ -12,7 +12,8 @@ impl LogicalReplicationStream {
         slot_name: &str,
         start_lsn: crate::logical_replication::message::Lsn,
     ) -> anyhow::Result<Self> {
-        let conn = libpq::Connection::new(conninfo)?;
+        let conninfo = with_replication_param(conninfo);
+        let conn = libpq::Connection::new(&conninfo)?;
         Ok(Self {
             conn,
             slot_name: slot_name.to_string(),
@@ -126,4 +127,64 @@ pub fn emit_replay_complete_message(client: &mut postgres::Client) -> anyhow::Re
         "SELECT pg_logical_emit_message(false, 'postgres-ost', convert_to('replay complete', 'UTF8'), true);"
     )?;
     Ok(())
+}
+
+fn with_replication_param(conninfo: &str) -> String {
+    let mut conninfo = conninfo.trim().to_string();
+    if !conninfo.contains("replication=") {
+        if conninfo.starts_with("postgres://") || conninfo.starts_with("postgresql://") {
+            // URI format
+            if conninfo.contains('?') {
+                conninfo.push_str("&replication=database");
+            } else {
+                conninfo.push_str("?replication=database");
+            }
+        } else {
+            // Key-value format
+            if !conninfo.is_empty() && !conninfo.ends_with(' ') {
+                conninfo.push(' ');
+            }
+            conninfo.push_str("replication=database");
+        }
+    }
+    conninfo
+}
+
+#[cfg(test)]
+mod tests {
+    use super::with_replication_param;
+
+    #[test]
+    fn test_with_replication_param_kv() {
+        let base = "host=localhost dbname=test user=foo";
+        let out = with_replication_param(base);
+        assert!(out.contains("replication=database"));
+        assert!(out.starts_with("host=localhost"));
+        assert!(out.contains("user=foo"));
+    }
+
+    #[test]
+    fn test_with_replication_param_kv_already_present() {
+        let base = "host=localhost dbname=test replication=database user=foo";
+        let out = with_replication_param(base);
+        let count = out.matches("replication=database").count();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn test_with_replication_param_uri() {
+        let base = "postgresql://foo@localhost/test";
+        let out = with_replication_param(base);
+        assert!(out.contains("replication=database"));
+        assert!(out.starts_with("postgresql://foo@localhost/test"));
+        assert!(out.contains("?replication=database") || out.contains("&replication=database"));
+    }
+
+    #[test]
+    fn test_with_replication_param_uri_already_present() {
+        let base = "postgresql://foo@localhost/test?replication=database";
+        let out = with_replication_param(base);
+        let count = out.matches("replication=database").count();
+        assert_eq!(count, 1);
+    }
 }

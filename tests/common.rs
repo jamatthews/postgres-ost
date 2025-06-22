@@ -5,6 +5,8 @@ use uuid::Uuid;
 pub struct TestDb {
     pub pool: Pool<PostgresConnectionManager<R2d2NoTls>>,
     pub dbname: String,
+    #[allow(dead_code)] // (commented out to avoid dead code warning)
+    pub test_db_url: String,
 }
 
 pub fn setup_test_db() -> TestDb {
@@ -31,7 +33,11 @@ pub fn setup_test_db() -> TestDb {
             "CREATE TABLE test_table (id BIGSERIAL PRIMARY KEY, assertable TEXT, target TEXT)",
         )
         .unwrap();
-    TestDb { pool, dbname }
+    TestDb {
+        pool,
+        dbname,
+        test_db_url,
+    }
 }
 
 #[cfg(test)]
