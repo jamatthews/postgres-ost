@@ -38,6 +38,11 @@ impl MigrationRunner {
     pub fn new(uri: &str) -> Result<Self> {
         let manager = PostgresConnectionManager::new(uri.parse()?, R2d2NoTls);
         let pool = Pool::new(manager)?;
+        // Detect and set Postgres version globally
+        {
+            let mut client = pool.get()?;
+            crate::version::detect_and_set_pg_version(&mut client)?;
+        }
         Ok(Self {
             pool,
             conninfo: uri.to_string(),

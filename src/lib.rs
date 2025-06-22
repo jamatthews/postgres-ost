@@ -14,6 +14,7 @@ pub mod pg_query_parser;
 pub mod replay;
 pub mod streaming_logical_replay;
 pub mod table;
+pub mod version;
 
 // Re-export key types for ergonomic access
 

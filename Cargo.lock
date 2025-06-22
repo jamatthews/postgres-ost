@@ -832,6 +832,7 @@ dependencies = [
  "ctrlc",
  "itertools 0.14.0",
  "libpq",
+ "once_cell",
  "pg_query",
  "postgres",
  "r2d2",
