@@ -31,13 +31,34 @@ impl Replay for StreamingLogicalReplay {
         Ok(())
     }
 
-    fn replay_log(&self, _client: &mut postgres::Client) -> anyhow::Result<()> {
+    fn replay_log(&self, client: &mut postgres::Client) -> anyhow::Result<()> {
         let mut stream = self.stream.borrow_mut();
-        // Fetch a batch of messages (e.g., up to 100, with a short timeout)
-        let _messages = stream.next_batch(100, Some(std::time::Duration::from_millis(500)))?;
+        let messages = stream.next_batch(100, Some(std::time::Duration::from_millis(500)))?;
+
+        // Collect wal2json JSON values from XLogData messages
+        let mut batch = Vec::new();
+        for msg in &messages {
+            if let crate::logical_replication::message::ReplicationMessage::XLogData(xlog) = msg {
+                if let Ok(json) = serde_json::from_slice::<serde_json::Value>(&xlog.data) {
+                    batch.push(json);
+                }
+            }
+        }
+
+        // Generate SQL statements and execute them
+        let statements = crate::logical_replay::wal2json2sql(
+            &batch,
+            &self.column_map,
+            &self.table,
+            &self.shadow_table,
+            &self.primary_key,
+        );
+        for stmt in statements {
+            client.batch_execute(&stmt)?;
+        }
+
         // Advance the slot's confirmed_flush_lsn to the stream's last_lsn
         let lsn = stream.last_lsn();
-        // Send feedback to Postgres to advance the slot
         stream.send_feedback(lsn)?;
         Ok(())
     }

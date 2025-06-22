@@ -331,6 +331,13 @@ mod integration {
             .run_schema_migration("ALTER TABLE test_table ADD COLUMN bar TEXT")
             .expect("Migration failed");
 
+        // --- Initial data and backfill ---
+        let mut client = pool.get().unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_backfilled', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_deleted', 'target_val')").unwrap();
+        client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_to_update', 'target_val')").unwrap();
+        runner.run_backfill(&migration).unwrap();
+
         // Build and setup streaming logical replay
         let replay_kind = runner
             .build_and_setup_replay(
@@ -342,20 +349,22 @@ mod integration {
 
         match replay_kind {
             ReplayKind::StreamingLogical(streaming_replay) => {
-                let mut client = pool.get().unwrap();
                 let initial_lsn = streaming_replay
                     .slot
                     .confirmed_flush_lsn(&mut client)
                     .unwrap();
-                println!("Initial confirmed_flush_lsn: {}", initial_lsn);
 
-                client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('streaming_test', 'val')").unwrap();
-                // Process input before replay_log to ensure WAL is visible
+                // --- DML changes ---
+                client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('expect_row_inserted', 'target_val')").unwrap();
+                client.simple_query("UPDATE test_table SET assertable = 'expect_row_updated' WHERE assertable = 'expect_row_to_update'").unwrap();
+                client
+                    .simple_query("DELETE FROM test_table WHERE assertable = 'expect_row_deleted'")
+                    .unwrap();
 
-                // Retry loop: wait for slot LSN to advance
+                // --- Replay changes ---
                 let mut new_lsn = initial_lsn;
                 let mut advanced = false;
-                for i in 0..50 {
+                for _i in 0..50 {
                     streaming_replay
                         .stream
                         .borrow()
@@ -375,7 +384,6 @@ mod integration {
                         .slot
                         .confirmed_flush_lsn(&mut client)
                         .unwrap();
-                    println!("Poll {}: confirmed_flush_lsn: {}", i, new_lsn);
                     if new_lsn > initial_lsn {
                         advanced = true;
                         break;
@@ -387,7 +395,37 @@ mod integration {
                     "LSN should advance after replay_log (initial: {}, new: {})",
                     initial_lsn, new_lsn
                 );
+
+                // --- Assertions ---
+                let rows = client
+                    .query(
+                        "SELECT assertable FROM post_migrations.test_table ORDER BY id",
+                        &[],
+                    )
+                    .unwrap();
+                let vals: Vec<String> = rows.iter().map(|row| row.get("assertable")).collect();
+                assert!(
+                    vals.contains(&"expect_backfilled".to_string()),
+                    "Backfilled row should be present"
+                );
+                assert!(
+                    vals.contains(&"expect_row_inserted".to_string()),
+                    "Inserted row should have been replayed"
+                );
+                assert!(
+                    vals.contains(&"expect_row_updated".to_string()),
+                    "Updated row should have been replayed"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_to_update".to_string()),
+                    "Row to update should not be present after update"
+                );
+                assert!(
+                    !vals.contains(&"expect_row_deleted".to_string()),
+                    "Deleted row should not be present after replay"
+                );
             }
+
             _ => panic!("Expected StreamingLogicalReplay kind"),
         }
     }
