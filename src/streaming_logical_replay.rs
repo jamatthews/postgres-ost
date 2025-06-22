@@ -32,7 +32,13 @@ impl Replay for StreamingLogicalReplay {
     }
 
     fn replay_log(&self, _client: &mut postgres::Client) -> anyhow::Result<()> {
-        // TODO: implement streaming replay logic
+        let mut stream = self.stream.borrow_mut();
+        // Fetch a batch of messages (e.g., up to 100, with a short timeout)
+        let _messages = stream.next_batch(100, Some(std::time::Duration::from_millis(500)))?;
+        // Advance the slot's confirmed_flush_lsn to the stream's last_lsn
+        let lsn = stream.last_lsn();
+        // Send feedback to Postgres to advance the slot
+        stream.send_feedback(lsn)?;
         Ok(())
     }
 

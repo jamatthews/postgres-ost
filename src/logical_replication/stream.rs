@@ -82,15 +82,6 @@ impl LogicalReplicationStream {
         Ok(messages)
     }
 
-    /// Update the confirmed LSN (send feedback to Postgres).
-    pub fn update_confirmed_lsn(
-        &mut self,
-        lsn: crate::logical_replication::message::Lsn,
-    ) -> anyhow::Result<()> {
-        self.last_lsn = lsn;
-        Ok(())
-    }
-
     /// Send a feedback message to Postgres with the confirmed LSN.
     pub fn send_feedback(
         &mut self,

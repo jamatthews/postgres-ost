@@ -340,10 +340,53 @@ mod integration {
             )
             .expect("Failed to build and setup streaming logical replay");
 
-        // Only check that we get the correct variant and setup does not error
         match replay_kind {
-            ReplayKind::StreamingLogical(_) => {
-                // Success: setup and construction worked
+            ReplayKind::StreamingLogical(streaming_replay) => {
+                let mut client = pool.get().unwrap();
+                let initial_lsn = streaming_replay
+                    .slot
+                    .confirmed_flush_lsn(&mut client)
+                    .unwrap();
+                println!("Initial confirmed_flush_lsn: {}", initial_lsn);
+
+                client.simple_query("INSERT INTO test_table (assertable, target) VALUES ('streaming_test', 'val')").unwrap();
+                // Process input before replay_log to ensure WAL is visible
+
+                // Retry loop: wait for slot LSN to advance
+                let mut new_lsn = initial_lsn;
+                let mut advanced = false;
+                for i in 0..50 {
+                    streaming_replay
+                        .stream
+                        .borrow()
+                        .conn
+                        .consume_input()
+                        .expect("consume input");
+                    streaming_replay
+                        .replay_log(&mut client)
+                        .expect("replay_log failed");
+                    streaming_replay
+                        .stream
+                        .borrow()
+                        .conn
+                        .flush()
+                        .expect("flush feedback");
+                    new_lsn = streaming_replay
+                        .slot
+                        .confirmed_flush_lsn(&mut client)
+                        .unwrap();
+                    println!("Poll {}: confirmed_flush_lsn: {}", i, new_lsn);
+                    if new_lsn > initial_lsn {
+                        advanced = true;
+                        break;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(50));
+                }
+                assert!(
+                    advanced,
+                    "LSN should advance after replay_log (initial: {}, new: {})",
+                    initial_lsn, new_lsn
+                );
             }
             _ => panic!("Expected StreamingLogicalReplay kind"),
         }
