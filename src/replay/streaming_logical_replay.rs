@@ -2,6 +2,7 @@
 // Implements StreamingLogicalReplay using LogicalReplicationStream.
 
 use crate::logical_replication::LogicalReplicationStream;
+use crate::replay::logical_replay;
 use crate::{ColumnMap, PrimaryKeyInfo, Replay, Table};
 use std::cell::RefCell;
 
@@ -46,7 +47,7 @@ impl Replay for StreamingLogicalReplay {
         }
 
         // Generate SQL statements and execute them
-        let statements = crate::logical_replay::wal2json2sql(
+        let statements = logical_replay::wal2json2sql(
             &batch,
             &self.column_map,
             &self.table,

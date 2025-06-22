@@ -1,4 +1,6 @@
-pub use crate::{LogTableReplay, LogicalReplay, PrimaryKey, wal2json2sql};
+pub mod log_table_replay;
+pub mod logical_replay;
+pub mod streaming_logical_replay;
 
 pub trait Replay {
     fn replay_log(&self, client: &mut postgres::Client) -> anyhow::Result<()>;

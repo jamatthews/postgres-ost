@@ -1,5 +1,6 @@
+use crate::Replay;
 use crate::backfill::{Backfill, BatchedBackfill};
-use crate::{ColumnMap, Migration, Replay};
+use crate::{ColumnMap, Migration};
 use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
@@ -13,7 +14,7 @@ impl MigrationOrchestrator {
         Self { migration, pool }
     }
 
-    pub fn start_log_replay_thread<R: crate::replay::Replay + Send + Sync + 'static>(
+    pub fn start_log_replay_thread<R: Replay + Send + Sync + 'static>(
         &self,
         replay: R,
         stop_replay: std::sync::Arc<std::sync::atomic::AtomicBool>,

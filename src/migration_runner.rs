@@ -7,15 +7,15 @@ use r2d2::Pool;
 use r2d2_postgres::{PostgresConnectionManager, postgres::NoTls as R2d2NoTls};
 
 // Internal module imports
+use crate::Replay;
 use crate::backfill::Backfill;
 use crate::column_map::ColumnMap;
-use crate::log_table_replay::LogTableReplay;
-use crate::logical_replay::LogicalReplay;
 use crate::logical_replication::{Publication, Slot};
 use crate::migration::Migration;
 use crate::orchestrator::MigrationOrchestrator;
-use crate::replay::Replay;
-use crate::streaming_logical_replay::StreamingLogicalReplay;
+use crate::replay::log_table_replay::LogTableReplay;
+use crate::replay::logical_replay::LogicalReplay;
+use crate::replay::streaming_logical_replay::StreamingLogicalReplay;
 
 pub struct MigrationRunner {
     pub pool: Pool<PostgresConnectionManager<R2d2NoTls>>,
@@ -158,7 +158,7 @@ impl MigrationRunner {
 
     pub fn run_replay_setup(&self, migration: &Migration, column_map: &ColumnMap) -> Result<()> {
         let mut client = self.pool.get()?;
-        let replay = crate::log_table_replay::LogTableReplay {
+        let replay = LogTableReplay {
             log_table: migration.log_table.clone(),
             shadow_table: migration.shadow_table.clone(),
             table: migration.table.clone(),
