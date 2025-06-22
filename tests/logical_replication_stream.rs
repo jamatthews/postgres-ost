@@ -1,9 +1,9 @@
 mod common;
 
-use postgres_ost::logical_replay::emit_replay_complete_message;
 use postgres_ost::logical_replication::LogicalReplicationStream;
 use postgres_ost::logical_replication::ReplicationMessage;
 use postgres_ost::logical_replication::Slot;
+use postgres_ost::logical_replication::stream::emit_replay_complete_message;
 
 // Integration test for using libpq to access logical replication XLogData
 // Requires: a running Postgres instance, logical replication enabled, and a logical slot created
