@@ -20,7 +20,7 @@ pub fn get_pg_version() -> Option<PgVersion> {
 
 pub fn detect_and_set_pg_version(client: &mut postgres::Client) -> anyhow::Result<PgVersion> {
     let row = client.query_one("SHOW server_version_num", &[])?;
-    let version_num: i32 = row.get(0);
+    let version_num: i32 = row.get::<_, String>(0).parse()?;
     let major = (version_num / 10000) as u32;
     let minor = ((version_num / 100) % 100) as u32;
     set_pg_version(major, minor);
