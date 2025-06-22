@@ -132,8 +132,12 @@ pub fn emit_replay_complete_message(client: &mut postgres::Client) -> anyhow::Re
         // PG17+: use the flush argument
         "SELECT pg_logical_emit_message(false, 'postgres-ost', convert_to('replay complete', 'UTF8'), true);"
     };
-    client.batch_execute(sql)?;
-    Ok(())
+    client.batch_execute(sql).map_err(|e| {
+        panic!(
+            "emit_replay_complete_message: db error: {} (Postgres version_num: {})",
+            e, v.version_num
+        )
+    })
 }
 
 fn with_replication_param(conninfo: &str) -> String {
