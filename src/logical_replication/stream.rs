@@ -125,7 +125,7 @@ pub fn emit_replay_complete_message(client: &mut postgres::Client) -> anyhow::Re
     use crate::version::get_pg_version;
     let v = get_pg_version()
         .expect("Postgres version must be set before calling emit_replay_complete_message");
-    let sql = if v.major < 17 {
+    let sql = if v.version_num < 170000 {
         // PG16 and below: omit the flush argument
         "SELECT pg_logical_emit_message(false, 'postgres-ost', convert_to('replay complete', 'UTF8'));"
     } else {
