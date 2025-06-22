@@ -151,6 +151,8 @@ fn test_send_feedback() {
 fn test_emit_replay_complete_message() {
     let (test_db, mut stream) = setup_slot_and_stream();
     let mut client = test_db.get_client();
+    // Ensure Postgres version is detected and set for this connection
+    postgres_ost::version::detect_and_set_pg_version(&mut client).expect("set pg version");
     stream.start().expect("stream start");
 
     // Insert a row to generate WAL
