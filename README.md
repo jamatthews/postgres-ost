@@ -6,7 +6,7 @@
 
 Currenly POST only supports a trigger and log table based approach inspired by tools like Facebook [osc](https://engineering.fb.com/2017/05/05/production-engineering/onlineschemachange-rebuilt-in-python/)
 
-Future work includes a logical replication based approach like [gh-ost](https://github.com/github/gh-ost) and [spirit](https://github.com/block/spirit) as well as support for signalling the table swap so you can trigger the actual change in a e.g. Rails migration that runs in your normal deploy process just before code paired to the new table structure.
+There's POC code atm for a logical replication based approach like [gh-ost](https://github.com/github/gh-ost) and [spirit](https://github.com/block/spirit) as well as support for signalling the table swap so you can trigger the actual change in a e.g. Rails migration that runs in your normal deploy process just before code paired to the new table structure.
 
 ## Usage
 
